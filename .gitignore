@@ -6,3 +6,4 @@ __pycache__/
 .pc_host_tmp/
 pc_host/logs/
 .vscode/
+superpowers/

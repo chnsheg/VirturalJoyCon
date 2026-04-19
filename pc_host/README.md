@@ -1,5 +1,64 @@
 # LAN Wireless Virtual Gamepad Host (MVP)
 
+## 快速安装与启动（当前版本）
+
+### 1. 环境要求
+
+- Windows 10/11
+- Python 3.12 或更新版本
+- 已安装 `ViGEmBus / Nefarius Virtual Gamepad Emulation Bus`
+- 手机和 PC 在同一个局域网
+
+### 2. 安装依赖
+
+在 `pc_host` 目录执行：
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. 启动服务
+
+在 `pc_host` 目录执行：
+
+```bash
+python web_host.py --host 0.0.0.0 --http-port 8081 --udp-port 28777 --timeout 8 --max-devices 4
+```
+
+启动后，本机会提供：
+
+- Web 控制页：`http://127.0.0.1:8081`
+- 局域网手机访问：`http://<你的电脑局域网IP>:8081`
+
+### 4. 首次部署到局域网
+
+如果电脑本机能打开 `http://127.0.0.1:8081`，但手机打不开，请用管理员 PowerShell 执行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+E:\JoyCon\pc_host\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
+```
+
+然后再用手机访问：
+
+```text
+http://<你的电脑局域网IP>:8081
+```
+
+### 5. 日常启动步骤
+
+1. 进入 `E:\JoyCon\pc_host`
+2. 执行上面的 `python web_host.py ...` 命令
+3. 确认终端里显示 `host_started http=8081 udp=28777`
+4. 手机横屏打开控制页并强制刷新一次
+5. 进入游戏测试
+
+### 6. 仅启动 UDP 主机（可选）
+
+```bash
+python gamepad_session_manager.py --host 0.0.0.0 --port 28777 --timeout 8 --max-devices 4
+```
+
 这是基于 `vgamepad` 的 PC Host 核心实现，目标是：
 - 不使用全局键盘映射
 - 每个手机客户端绑定独立虚拟手柄实例

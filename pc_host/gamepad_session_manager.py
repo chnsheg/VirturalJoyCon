@@ -5,32 +5,33 @@ import hashlib
 import json
 import math
 import time
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
-import vgamepad as vg
+from xbox_protocol import XUSB_BUTTON, Xbox360Controller
 
 
 XINPUT_MIN = -32768
 XINPUT_MAX = 32767
+TRIGGER_MAX = 255
 
 
 BUTTON_MAP = {
-    "a": vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
-    "b": vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
-    "x": vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
-    "y": vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
-    "lb": vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
-    "rb": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
-    "select": vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK,
-    "start": vg.XUSB_BUTTON.XUSB_GAMEPAD_START,
-    "dpad_up": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
-    "dpad_down": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
-    "dpad_left": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
-    "dpad_right": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
-    # image_1 中间两个额外圆形键：
-    # extra_left -> GUIDE(Home), extra_right -> RIGHT_THUMB(Fn/自定义功能)
-    "extra_left": vg.XUSB_BUTTON.XUSB_GAMEPAD_GUIDE,
-    "extra_right": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
+    "a": int(XUSB_BUTTON.XUSB_GAMEPAD_A),
+    "b": int(XUSB_BUTTON.XUSB_GAMEPAD_B),
+    "x": int(XUSB_BUTTON.XUSB_GAMEPAD_X),
+    "y": int(XUSB_BUTTON.XUSB_GAMEPAD_Y),
+    "lb": int(XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER),
+    "rb": int(XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER),
+    "select": int(XUSB_BUTTON.XUSB_GAMEPAD_BACK),
+    "start": int(XUSB_BUTTON.XUSB_GAMEPAD_START),
+    "dpad_up": int(XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP),
+    "dpad_down": int(XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN),
+    "dpad_left": int(XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT),
+    "dpad_right": int(XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT),
+    "ls": int(XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB),
+    "rs": int(XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB),
+    "extra_left": int(XUSB_BUTTON.XUSB_GAMEPAD_GUIDE),
+    "extra_right": int(XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB),
 }
 
 
@@ -39,15 +40,36 @@ class Session:
     session_key: str
     endpoint: Tuple[str, int]
     user_index: int
-    gamepad: vg.VX360Gamepad
+    gamepad: object
     last_seen: float
+    input_stream_id: str = ""
+    last_packet_seq: int = -1
+    pool_slot: int = -1
+
+    def accepts_packet(self, packet: dict) -> bool:
+        stream_id = str(packet.get("input_stream_id", "")).strip()
+        seq = packet.get("seq")
+
+        if not stream_id or not isinstance(seq, int):
+            return True
+
+        if stream_id != self.input_stream_id:
+            self.input_stream_id = stream_id
+            self.last_packet_seq = -1
+
+        if seq <= self.last_packet_seq:
+            return False
+
+        self.last_packet_seq = seq
+        return True
 
 
 class VirtualDevicePool:
-    def __init__(self, max_devices: int = 4):
+    def __init__(self, max_devices: int = 4, controller_factory: Optional[Callable[[], object]] = None):
         if max_devices < 1 or max_devices > 4:
-            raise ValueError("max_devices 必须在 1..4 之间")
+            raise ValueError("max_devices must be in 1..4")
         self.max_devices = max_devices
+        self.controller_factory = controller_factory or Xbox360Controller
         self._sessions: Dict[str, Session] = {}
         self._index_owners: Dict[int, str] = {}
 
@@ -71,13 +93,16 @@ class VirtualDevicePool:
         if free_index is None:
             return None
 
-        gamepad = vg.VX360Gamepad()
+        gamepad = self.controller_factory()
+        reported_user_index = getattr(gamepad, "get_user_index", lambda: free_index)()
+
         session = Session(
             session_key=session_key,
             endpoint=endpoint,
-            user_index=free_index,
+            user_index=free_index if reported_user_index is None else int(reported_user_index),
             gamepad=gamepad,
             last_seen=time.time(),
+            pool_slot=free_index,
         )
         self._sessions[session_key] = session
         self._index_owners[free_index] = session_key
@@ -88,20 +113,27 @@ class VirtualDevicePool:
         if not session:
             return
 
-        self._index_owners.pop(session.user_index, None)
+        self._index_owners.pop(session.pool_slot if session.pool_slot >= 0 else session.user_index, None)
 
-        # 复位并触发一次 update，确保断连时不会残留按键状态
-        session.gamepad.reset()
-        session.gamepad.update()
+        reset = getattr(session.gamepad, "reset", None)
+        if callable(reset):
+            reset()
 
-        # 删除实例触发 ViGEm 设备回收（vgamepad 生命周期）
+        update = getattr(session.gamepad, "update", None)
+        if callable(update):
+            update()
+
+        close = getattr(session.gamepad, "close", None)
+        if callable(close):
+            close()
+
         del session.gamepad
 
 
 class GamepadMapper:
     def __init__(self, deadzone: float = 0.12):
         if not (0.0 <= deadzone < 1.0):
-            raise ValueError("deadzone 必须在 [0,1) 范围")
+            raise ValueError("deadzone must be in [0,1)")
         self.deadzone = deadzone
 
     @staticmethod
@@ -110,10 +142,15 @@ class GamepadMapper:
 
     @staticmethod
     def _to_xinput_axis(value: float) -> int:
-        # value: [-1.0, 1.0]
         value = max(-1.0, min(1.0, value))
         mapped = int(round(value * XINPUT_MAX))
         return max(XINPUT_MIN, min(XINPUT_MAX, mapped))
+
+    @staticmethod
+    def _to_trigger_value(value: float) -> int:
+        value = max(0.0, min(1.0, value))
+        mapped = int(round(value * TRIGGER_MAX))
+        return max(0, min(TRIGGER_MAX, mapped))
 
     def _apply_radial_deadzone(self, nx: float, ny: float) -> Tuple[float, float]:
         mag = math.hypot(nx, ny)
@@ -139,10 +176,7 @@ class GamepadMapper:
             return 0, 0
 
         dx = touch_x - center_x
-        dy_screen = touch_y - center_y
-
-        # 屏幕坐标 y 向下为正，XInput 需要 y 向上为正
-        dy = -dy_screen
+        dy = -(touch_y - center_y)
 
         dist = math.hypot(dx, dy)
         if dist > radius:
@@ -152,9 +186,7 @@ class GamepadMapper:
 
         nx = self._clamp(dx / radius, -1.0, 1.0)
         ny = self._clamp(dy / radius, -1.0, 1.0)
-
         nx, ny = self._apply_radial_deadzone(nx, ny)
-
         return self._to_xinput_axis(nx), self._to_xinput_axis(ny)
 
     def normalize_stick_from_normalized(self, nx: float, ny: float) -> Tuple[int, int]:
@@ -163,21 +195,28 @@ class GamepadMapper:
         nx, ny = self._apply_radial_deadzone(nx, ny)
         return self._to_xinput_axis(nx), self._to_xinput_axis(ny)
 
+    def map_processed_stick(self, nx: float, ny: float) -> Tuple[int, int]:
+        nx = self._clamp(nx, -1.0, 1.0)
+        ny = self._clamp(ny, -1.0, 1.0)
+        return self._to_xinput_axis(nx), self._to_xinput_axis(ny)
+
     def _parse_stick(self, stick_obj: dict) -> Tuple[int, int]:
         if not stick_obj:
             return 0, 0
 
-        # 方案 A：前端直接给归一化值 nx/ny（推荐，带宽最小）
         if "nx" in stick_obj and "ny" in stick_obj:
+            if bool(stick_obj.get("processed", False)):
+                return self.map_processed_stick(
+                    float(stick_obj.get("nx", 0.0)),
+                    float(stick_obj.get("ny", 0.0)),
+                )
             return self.normalize_stick_from_normalized(
                 float(stick_obj.get("nx", 0.0)),
                 float(stick_obj.get("ny", 0.0)),
             )
 
-        # 方案 B：前端给像素触点 + 摇杆底座中心 + 半径
         touch = stick_obj.get("touch") or {}
         center = stick_obj.get("center") or {}
-
         touch_x = float(stick_obj.get("x", touch.get("x", 0.0)))
         touch_y = float(stick_obj.get("y", touch.get("y", 0.0)))
         center_x = float(stick_obj.get("cx", center.get("x", 0.0)))
@@ -192,23 +231,25 @@ class GamepadMapper:
             radius=radius,
         )
 
-    def apply_packet(self, gamepad: vg.VX360Gamepad, packet: dict) -> None:
-        buttons = packet.get("buttons", {})
-
+    def apply_packet(self, gamepad: object, packet: dict) -> None:
+        buttons = packet.get("buttons", {}) or {}
         for key, xbtn in BUTTON_MAP.items():
-            pressed = bool(buttons.get(key, False))
-            if pressed:
+            if bool(buttons.get(key, False)):
                 gamepad.press_button(button=xbtn)
             else:
                 gamepad.release_button(button=xbtn)
 
-        sticks = packet.get("sticks", {})
+        sticks = packet.get("sticks", {}) or {}
         lx, ly = self._parse_stick(sticks.get("left", {}))
         rx, ry = self._parse_stick(sticks.get("right", {}))
+        triggers = packet.get("triggers", {}) or {}
+        lt = self._to_trigger_value(float(triggers.get("lt", 0.0)))
+        rt = self._to_trigger_value(float(triggers.get("rt", 0.0)))
 
         gamepad.left_joystick(x_value=lx, y_value=ly)
         gamepad.right_joystick(x_value=rx, y_value=ry)
-
+        gamepad.left_trigger(value=lt)
+        gamepad.right_trigger(value=rt)
         gamepad.update()
 
 
@@ -219,8 +260,6 @@ class GamepadSessionManagerProtocol(asyncio.DatagramProtocol):
 
     @staticmethod
     def make_session_key(addr: Tuple[str, int], packet: dict) -> str:
-        # 默认身份绑定：IP:Port
-        # 若客户端提供 device_id，可叠加形成更稳健唯一键
         raw = f"{addr[0]}:{addr[1]}:{packet.get('device_id', '')}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
@@ -233,15 +272,15 @@ class GamepadSessionManagerProtocol(asyncio.DatagramProtocol):
         session_key = self.make_session_key(addr, packet)
         session = self.pool.get_or_create(session_key=session_key, endpoint=addr)
         if session is None:
-            # 设备池满，丢弃该客户端输入
             return
 
         session.last_seen = time.time()
+        if not session.accepts_packet(packet):
+            return
 
         try:
             self.mapper.apply_packet(session.gamepad, packet)
         except Exception:
-            # 输入异常时不影响主循环
             return
 
 
@@ -281,7 +320,7 @@ async def run_server(host: str, port: int, timeout_sec: float, deadzone: float, 
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LAN Wireless Virtual Gamepad Session Manager (vgamepad)")
+    parser = argparse.ArgumentParser(description="LAN Wireless Virtual Gamepad Session Manager (ViGEm/XUSB)")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=28777)
     parser.add_argument("--timeout", type=float, default=8.0, help="Session heartbeat timeout in seconds")

@@ -1,3 +1,8 @@
+param(
+    [int]$HttpPort = 8081,
+    [int]$UdpPort = 28777
+)
+
 $ErrorActionPreference = 'Stop'
 
 Write-Host '[1/4] Set WLAN profile to Private (if allowed)...' -ForegroundColor Cyan
@@ -10,8 +15,8 @@ try {
 
 Write-Host '[2/4] Create firewall rules for JoyCon host...' -ForegroundColor Cyan
 $rules = @(
-    @{ Name = 'JoyCon-Web-8080'; Protocol = 'TCP'; Port = 8080 },
-    @{ Name = 'JoyCon-UDP-28777'; Protocol = 'UDP'; Port = 28777 }
+    @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort },
+    @{ Name = "JoyCon-UDP-$UdpPort"; Protocol = 'UDP'; Port = $UdpPort }
 )
 
 foreach ($r in $rules) {
@@ -27,9 +32,9 @@ Get-NetIPAddress -AddressFamily IPv4 |
     Format-Table -AutoSize
 
 Write-Host '[4/4] Verify port listen status...' -ForegroundColor Cyan
-Get-NetTCPConnection -LocalPort 8080 -State Listen |
+Get-NetTCPConnection -LocalPort $HttpPort -State Listen |
     Select-Object -First 3 LocalAddress,LocalPort,State,OwningProcess |
     Format-Table -AutoSize
 
 Write-Host ''
-Write-Host 'Done. Open on phone: http://<LAN_IP>:8080' -ForegroundColor Green
+Write-Host "Done. Open on phone: http://<LAN_IP>:$HttpPort" -ForegroundColor Green
