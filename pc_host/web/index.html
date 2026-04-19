@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>JoyCon Web Pad</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#1a1f29; --muted:#8b93a7; --text:#e8ecf3; --accent:#4f8cff; --danger:#ff5d7a; }
+    * { box-sizing: border-box; touch-action: none; -webkit-user-select:none; user-select:none; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { height: 100dvh; padding: 10px; display:grid; grid-template-rows: auto 1fr auto; gap:10px; }
+    .status { font-size: 13px; color: var(--muted); display:flex; justify-content:space-between; }
+    .top, .mid, .bottom { display:grid; gap:10px; }
+    .top { grid-template-columns: 1fr 1fr 1fr 1fr; align-items:center; }
+    .mid { grid-template-columns: 1fr 1fr; }
+    .bottom { grid-template-columns: repeat(4,1fr); }
+    .panel { background:var(--panel); border-radius:16px; padding:8px; min-height:120px; display:flex; justify-content:center; align-items:center; }
+
+    .btn { border:none; border-radius:14px; background:#242c39; color:var(--text); min-height:56px; font-weight:700; font-size:16px; }
+    .btn.on { background:var(--accent); }
+    .btn.fn.on { background:var(--danger); }
+
+    .dpad { width:130px; height:130px; display:grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(3,1fr); gap:4px; }
+    .dpad .btn { min-height:auto; border-radius:10px; font-size:12px; }
+
+    .abxy { width:130px; height:130px; position:relative; }
+    .abxy .btn { position:absolute; width:46px; height:46px; border-radius:50%; min-height:auto; }
+    .abxy .y { left:42px; top:0; }
+    .abxy .a { left:42px; bottom:0; }
+    .abxy .x { left:0; top:42px; }
+    .abxy .b { right:0; top:42px; }
+
+    .stick { width:130px; height:130px; border-radius:50%; background:#242c39; position:relative; border:2px solid #2f394a; }
+    .knob { width:50px; height:50px; border-radius:50%; background:#7fa8ff; position:absolute; left:40px; top:40px; }
+
+    .smallRound { width:88px; height:88px; border-radius:50%; font-size:14px; }
+    .hint { text-align:center; color:var(--muted); font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="status">
+      <div id="conn">WS: connecting...</div>
+      <div id="slot">slot: -</div>
+    </div>
+
+    <div class="top">
+      <div class="panel"><div class="stick" id="leftStick"><div class="knob"></div></div></div>
+      <div class="panel">
+        <div class="dpad">
+          <div></div><button class="btn" data-btn="dpad_up">UP</button><div></div>
+          <button class="btn" data-btn="dpad_left">LEFT</button><div></div><button class="btn" data-btn="dpad_right">RIGHT</button>
+          <div></div><button class="btn" data-btn="dpad_down">DOWN</button><div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="abxy">
+          <button class="btn y" data-btn="y">Y</button>
+          <button class="btn a" data-btn="a">A</button>
+          <button class="btn x" data-btn="x">X</button>
+          <button class="btn b" data-btn="b">B</button>
+        </div>
+      </div>
+      <div class="panel"><div class="stick" id="rightStick"><div class="knob"></div></div></div>
+    </div>
+
+    <div class="mid">
+      <div class="panel"><button class="btn fn smallRound" data-btn="extra_left">HOME</button></div>
+      <div class="panel"><button class="btn fn smallRound" data-btn="extra_right">FN</button></div>
+    </div>
+
+    <div class="bottom">
+      <button class="btn" data-btn="lb">LB</button>
+      <button class="btn" data-btn="select">SELECT</button>
+      <button class="btn" data-btn="start">START</button>
+      <button class="btn" data-btn="rb">RB</button>
+    </div>
+
+    <div class="hint">手机与 PC 在同一局域网，保持页面常亮以维持会话。</div>
+  </div>
+
+  <script>
+    window.addEventListener('error', (e) => {
+      const connEl = document.getElementById('conn');
+      if (connEl) connEl.textContent = `JS error: ${e.message || 'unknown'}`;
+    });
+
+    function fallbackUuid() {
+      return `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    function getDeviceId() {
+      let saved = null;
+      try { saved = localStorage.getItem('joycon_device_id'); } catch {}
+      if (saved) return saved;
+
+      let id = null;
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        id = window.crypto.randomUUID();
+      } else {
+        id = fallbackUuid();
+      }
+
+      try { localStorage.setItem('joycon_device_id', id); } catch {}
+      return id;
+    }
+
+    function getClientSessionId() {
+      let saved = null;
+      try { saved = localStorage.getItem('joycon_client_session_id'); } catch {}
+      if (saved) return saved;
+      const id = fallbackUuid();
+      try { localStorage.setItem('joycon_client_session_id', id); } catch {}
+      return id;
+    }
+
+    const state = {
+      device_id: getDeviceId(),
+      client_session_id: getClientSessionId(),
+      buttons: {
+        a:false,b:false,x:false,y:false,lb:false,rb:false,select:false,start:false,
+        dpad_up:false,dpad_down:false,dpad_left:false,dpad_right:false,
+        extra_left:false,extra_right:false
+      },
+      sticks: { left:{nx:0,ny:0}, right:{nx:0,ny:0} }
+    };
+
+    const connEl = document.getElementById('conn');
+    const slotEl = document.getElementById('slot');
+    let ws = null;
+    let wsConnected = false;
+    let lastHttpSendAt = 0;
+    let httpSending = false;
+    let transportMode = 'ws';
+    const supportsPointer = typeof window.PointerEvent !== 'undefined';
+
+    function connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const url = `${proto}://${location.host}/ws`;
+      connEl.textContent = `WS: connecting ${url}`;
+      try {
+        ws = new WebSocket(url);
+      } catch (err) {
+        connEl.textContent = `WS ctor error: ${err && err.message ? err.message : 'unknown'}`;
+        setTimeout(connectWS, 1200);
+        return;
+      }
+      ws.onopen = () => { wsConnected = true; connEl.textContent = 'WS: connected'; };
+      ws.onclose = () => {
+        wsConnected = false;
+        transportMode = 'http';
+        connEl.textContent = 'WS: closed, retry... (HTTP fallback active)';
+        setTimeout(connectWS, 1200);
+      };
+      ws.onerror = () => {
+        wsConnected = false;
+        transportMode = 'http';
+        connEl.textContent = 'WS: error (HTTP fallback active)';
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'ack' && Number.isInteger(msg.slot)) slotEl.textContent = `slot: ${msg.slot}`;
+        } catch {}
+      };
+    }
+
+    function bindHoldButton(el, key) {
+      const on = (pressed) => {
+        state.buttons[key] = pressed;
+        el.classList.toggle('on', pressed);
+      };
+
+      if (supportsPointer) {
+        el.addEventListener('pointerdown', (e) => { e.preventDefault(); on(true); el.setPointerCapture(e.pointerId); });
+        const offs = ['pointerup','pointercancel','pointerleave','lostpointercapture'];
+        offs.forEach(evt => el.addEventListener(evt, (e) => { e.preventDefault(); on(false); }));
+      } else {
+        el.addEventListener('touchstart', (e) => { e.preventDefault(); on(true); }, { passive: false });
+        el.addEventListener('touchend', (e) => { e.preventDefault(); on(false); }, { passive: false });
+        el.addEventListener('touchcancel', (e) => { e.preventDefault(); on(false); }, { passive: false });
+        el.addEventListener('mousedown', (e) => { e.preventDefault(); on(true); });
+        el.addEventListener('mouseup', (e) => { e.preventDefault(); on(false); });
+        el.addEventListener('mouseleave', (e) => { e.preventDefault(); on(false); });
+      }
+
+      el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); el.blur(); });
+      el.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+
+    document.querySelectorAll('[data-btn]').forEach(el => bindHoldButton(el, el.dataset.btn));
+
+    function bindStick(stickEl, stickKey) {
+      const knob = stickEl.querySelector('.knob');
+      let activeId = null;
+      let touchId = null;
+      let mouseDown = false;
+      const R = 40;
+
+      const setStick = (nx, ny) => {
+        nx = Math.max(-1, Math.min(1, nx));
+        ny = Math.max(-1, Math.min(1, ny));
+        state.sticks[stickKey].nx = nx;
+        state.sticks[stickKey].ny = ny;
+        knob.style.left = `${40 + nx * R}px`;
+        knob.style.top = `${40 - ny * R}px`;
+      };
+
+      const calc = (e) => {
+        const rect = stickEl.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let dx = e.clientX - cx;
+        let dy = cy - e.clientY;
+        const d = Math.hypot(dx, dy);
+        if (d > R) { dx = dx / d * R; dy = dy / d * R; }
+        setStick(dx / R, dy / R);
+      };
+
+      const calcByPoint = (clientX, clientY) => {
+        const rect = stickEl.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let dx = clientX - cx;
+        let dy = cy - clientY;
+        const d = Math.hypot(dx, dy);
+        if (d > R) { dx = dx / d * R; dy = dy / d * R; }
+        setStick(dx / R, dy / R);
+      };
+
+      if (supportsPointer) {
+        stickEl.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          activeId = e.pointerId;
+          stickEl.setPointerCapture(activeId);
+          calc(e);
+        });
+
+        stickEl.addEventListener('pointermove', (e) => {
+          if (e.pointerId !== activeId) return;
+          calc(e);
+        });
+
+        const resetPointer = () => { activeId = null; setStick(0,0); };
+        ['pointerup','pointercancel','lostpointercapture'].forEach(evt => stickEl.addEventListener(evt, resetPointer));
+      } else {
+        stickEl.addEventListener('touchstart', (e) => {
+          e.preventDefault();
+          if (!e.changedTouches || e.changedTouches.length === 0) return;
+          const t = e.changedTouches[0];
+          touchId = t.identifier;
+          calcByPoint(t.clientX, t.clientY);
+        }, { passive: false });
+
+        stickEl.addEventListener('touchmove', (e) => {
+          e.preventDefault();
+          if (!e.changedTouches) return;
+          for (const t of e.changedTouches) {
+            if (t.identifier === touchId) {
+              calcByPoint(t.clientX, t.clientY);
+              break;
+            }
+          }
+        }, { passive: false });
+
+        const resetTouch = (e) => {
+          e.preventDefault();
+          touchId = null;
+          setStick(0,0);
+        };
+        stickEl.addEventListener('touchend', resetTouch, { passive: false });
+        stickEl.addEventListener('touchcancel', resetTouch, { passive: false });
+
+        stickEl.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          mouseDown = true;
+          calcByPoint(e.clientX, e.clientY);
+        });
+        window.addEventListener('mousemove', (e) => {
+          if (!mouseDown) return;
+          calcByPoint(e.clientX, e.clientY);
+        });
+        window.addEventListener('mouseup', () => {
+          if (!mouseDown) return;
+          mouseDown = false;
+          setStick(0,0);
+        });
+      }
+    }
+
+    bindStick(document.getElementById('leftStick'), 'left');
+    bindStick(document.getElementById('rightStick'), 'right');
+
+    async function sendHttpFallback() {
+      if (httpSending) return;
+      httpSending = true;
+      try {
+        const resp = await fetch('/input', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(state),
+          keepalive: true
+        });
+        if (resp.ok) {
+          const msg = await resp.json();
+          if (Number.isInteger(msg.slot)) slotEl.textContent = `slot: ${msg.slot} mode:${transportMode}`;
+        }
+      } catch {}
+      httpSending = false;
+    }
+
+    function sendLoop(now) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(state));
+      } else if (!wsConnected && (now - lastHttpSendAt > 50)) {
+        lastHttpSendAt = now;
+        sendHttpFallback();
+      }
+      requestAnimationFrame(sendLoop);
+    }
+
+    connectWS();
+    sendLoop();
+  </script>
+</body>
+</html>
