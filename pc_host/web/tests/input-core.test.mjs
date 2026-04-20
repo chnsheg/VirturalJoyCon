@@ -50,6 +50,42 @@ test("AdaptiveStickProcessor keeps upward motion upward under jitter", () => {
   }
 });
 
+test("higher stick sensitivity boosts small input and keeps full deflection capped", () => {
+  const softExponent = 1.85;
+  const quickExponent = 1.15;
+  const soft = applyRadialResponse(
+    { x: 0, y: 0.42 },
+    { deadzone: 0.08, antiDeadzone: 0.05, outerDeadzone: 0.02, responseExponent: softExponent },
+  );
+  const quick = applyRadialResponse(
+    { x: 0, y: 0.42 },
+    { deadzone: 0.08, antiDeadzone: 0.05, outerDeadzone: 0.02, responseExponent: quickExponent },
+  );
+
+  assert.ok(quick.y > soft.y);
+  assert.equal(
+    applyRadialResponse({ x: 0, y: 1 }, { responseExponent: softExponent }).y,
+    1,
+  );
+  assert.equal(
+    applyRadialResponse({ x: 0, y: 1 }, { responseExponent: quickExponent }).y,
+    1,
+  );
+
+  const processor = new AdaptiveStickProcessor({
+    deadzone: 0.08,
+    antiDeadzone: 0.05,
+    outerDeadzone: 0.02,
+    responseExponent: softExponent,
+    minCutoff: 1.2,
+    beta: 0.35,
+    derivativeCutoff: 1.0,
+  });
+  processor.setResponseExponent(quickExponent);
+  const output = processor.sampleVector({ x: 0, y: 0.42, now: 0 });
+  assert.equal(output.state.y, quick.y);
+});
+
 test("LatestStateTransmitter only sends dirty newest state and respects websocket backpressure", () => {
   const sent = [];
   const socket = {

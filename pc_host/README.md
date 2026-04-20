@@ -1,196 +1,120 @@
 # LAN Wireless Virtual Gamepad Host (MVP)
 
-## 快速安装与启动（当前版本）
+## Standalone web controller quick start
 
-### 1. 环境要求
+### 1. Requirements
 
 - Windows 10/11
-- Python 3.12 或更新版本
-- 已安装 `ViGEmBus / Nefarius Virtual Gamepad Emulation Bus`
-- 手机和 PC 在同一个局域网
+- Python 3.12 or newer
+- `ViGEmBus / Nefarius Virtual Gamepad Emulation Bus`
+- Phone and PC on the same LAN
 
-### 2. 安装依赖
+### 2. Install dependencies
 
-在 `pc_host` 目录执行：
+Run inside `pc_host`:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. 启动服务
+### 3. Start the Python host
 
-在 `pc_host` 目录执行：
+Run inside `pc_host`:
 
 ```bash
 python web_host.py --host 0.0.0.0 --http-port 8081 --udp-port 28777 --timeout 8 --max-devices 4
 ```
 
-启动后，本机会提供：
+The host prints `Standalone controller target: <LAN_IP>:8081` when it detects one private LAN address.
+The standalone frontend expects an IPv4 target in `LAN_IP:port` format only.
 
-- Web 控制页：`http://127.0.0.1:8081`
-- 局域网手机访问：`http://<你的电脑局域网IP>:8081`
+If auto-detection does not find a private LAN address, manually enter this PC's reachable IPv4 address and port, for example `192.168.0.119:8081`.
 
-### 4. 首次部署到局域网
+### 4. Open the Windows firewall when needed
 
-如果电脑本机能打开 `http://127.0.0.1:8081`，但手机打不开，请用管理员 PowerShell 执行：
+Run inside `pc_host` from an elevated PowerShell session:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-E:\JoyCon\pc_host\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
 ```
 
-然后再用手机访问：
+If you also need the legacy UDP path:
 
-```text
-http://<你的电脑局域网IP>:8081
+```powershell
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
 ```
 
-### 5. 日常启动步骤
+### 5. Host the standalone frontend
 
-1. 进入 `E:\JoyCon\pc_host`
-2. 执行上面的 `python web_host.py ...` 命令
-3. 确认终端里显示 `host_started http=8081 udp=28777`
-4. 手机横屏打开控制页并强制刷新一次
-5. 进入游戏测试
-
-### 6. 仅启动 UDP 主机（可选）
+Frontend files are in `pc_host\web`. You can host them with any static HTTP server. Quick example:
 
 ```bash
-python gamepad_session_manager.py --host 0.0.0.0 --port 28777 --timeout 8 --max-devices 4
+cd web
+python -m http.server 8090
 ```
 
-这是基于 `vgamepad` 的 PC Host 核心实现，目标是：
-- 不使用全局键盘映射
-- 每个手机客户端绑定独立虚拟手柄实例
-- 支持独立多人同时控制（最多 4 人）
+### 6. Open the frontend and connect
 
-## 为什么手机端优先做 Web（而非原生 App）
+- Visit the frontend page, for example `http://<frontend-host-ip>:8090`
+- Pull open the thin right-side drawer
+- Enter the Python host target as `LAN_IP:8081`
+- Optionally adjust `Stick sensitivity` in the same drawer if the default stick feel is too stiff
+- Press `Connect`
+- The host target and stick sensitivity are saved locally on that device for the next visit
 
-为了快速实现与快速迭代，建议手机端先用前端网页（PWA/浏览器页面）：
-- UI 改版和按键布局迭代速度明显更快
-- 局域网内直接访问 Host 的网页或配置页，减少发版成本
-- 输入协议（UDP JSON）先稳定，再决定是否原生化
+## Runtime summary
 
-## 运行方式
-
-1. 安装依赖：
+1. Install dependencies in `pc_host`:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. 启动 Web Host（推荐，手机浏览器可直接控制）：
+2. Start the Python host:
 
 ```bash
-python web_host.py --host 0.0.0.0 --http-port 8080 --udp-port 28777 --timeout 8 --max-devices 4
+python web_host.py --host 0.0.0.0 --http-port 8081 --udp-port 28777 --timeout 8 --max-devices 4
 ```
 
-3. 手机与 PC 连接同一局域网，手机浏览器打开：
+3. If the phone or another PC cannot reach `8081/TCP`, run the firewall helper in an elevated PowerShell window:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
+```
+
+4. Host `pc_host/web` separately and open it in a browser:
 
 ```text
-http://<PC局域网IP>:8080
+http://<frontend-host-ip>:8090
 ```
 
-4. 可选：仅启动 UDP 服务（无网页）：
+5. In the frontend drawer, enter the host terminal's `Standalone controller target: <LAN_IP>:8081`.
+   The input must stay in IPv4 `LAN_IP:port` format, not a hostname.
+
+6. Optional: run the legacy UDP-only bridge:
 
 ```bash
 python gamepad_session_manager.py --host 0.0.0.0 --port 28777 --timeout 8 --max-devices 4
 ```
 
-## 手机无法访问时（高概率是 Windows 防火墙/网络类别）
+## If the phone cannot reach the host
 
-如果本机可访问 `http://127.0.0.1:8080`，但手机打不开，通常是：
-- 当前 Wi-Fi 网卡是 Public 网络类别
-- 入站规则未放行 8080/TCP
+Usually this means:
 
-请用“管理员 PowerShell”执行：
+- The current Wi-Fi network profile is `Public`
+- Windows Firewall is not allowing inbound `8081/TCP`
+
+Run inside `pc_host` from an elevated PowerShell session:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-d:\JoyCon\pc_host\scripts\fix_network_access.ps1
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
 ```
 
-然后手机访问：
+If you also need the legacy UDP bridge:
 
-```text
-http://<WLAN的私网IP>:8080
+```powershell
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
 ```
-
-## `image_1` 布局映射方案
-
-- 顶部：
-  - 左摇杆 -> `left_joystick`
-  - D-Pad -> `XUSB_GAMEPAD_DPAD_UP/DOWN/LEFT/RIGHT`
-  - A/B/X/Y -> `XUSB_GAMEPAD_A/B/X/Y`
-  - 右摇杆 -> `right_joystick`
-- 底部：
-  - LB -> `XUSB_GAMEPAD_LEFT_SHOULDER`
-  - SELECT -> `XUSB_GAMEPAD_BACK`
-  - START -> `XUSB_GAMEPAD_START`
-  - RB -> `XUSB_GAMEPAD_RIGHT_SHOULDER`
-- 中间两个额外圆形键（可改）：
-  - `extra_left` -> `XUSB_GAMEPAD_GUIDE`（Home）
-  - `extra_right` -> `XUSB_GAMEPAD_RIGHT_THUMB`（Fn/可自定义）
-
-## UDP 输入包（建议）
-
-```json
-{
-  "device_id": "phone-A-uuid",
-  "buttons": {
-    "a": false,
-    "b": false,
-    "x": false,
-    "y": false,
-    "lb": false,
-    "rb": false,
-    "select": false,
-    "start": false,
-    "dpad_up": false,
-    "dpad_down": false,
-    "dpad_left": false,
-    "dpad_right": false,
-    "extra_left": false,
-    "extra_right": false
-  },
-  "sticks": {
-    "left": {
-      "nx": 0.0,
-      "ny": 0.0
-    },
-    "right": {
-      "x": 462,
-      "y": 812,
-      "cx": 430,
-      "cy": 840,
-      "radius": 80
-    }
-  }
-}
-```
-
-## 摇杆归一化（像素 -> XInput 16-bit）
-
-以某摇杆为例：
-
-- 计算位移：
-  - `dx = touch_x - center_x`
-  - `dy_screen = touch_y - center_y`
-  - `dy = -dy_screen`（屏幕 Y 轴向下，XInput Y 轴向上）
-- 半径裁剪：
-  - 若 `sqrt(dx^2 + dy^2) > radius`，则按比例缩回圆周
-- 归一化：
-  - `nx = dx / radius`
-  - `ny = dy / radius`
-- 径向死区：
-  - 若 `mag <= deadzone` 输出 0
-  - 否则 `scaled = (mag - deadzone)/(1 - deadzone)`，并按方向缩放
-- 量化到 16-bit：
-  - `axis = round(n * 32767)`，并 clamp 到 `[-32768, 32767]`
-
-## 会话绑定与隔离
-
-- 使用 `SHA1(ip:port:device_id)` 作为 session key
-- 每个 session 分配独立 `VX360Gamepad` 实例
-- 状态更新只写入该 session 绑定实例
-- 心跳超时后自动 `reset + update + release` 回收

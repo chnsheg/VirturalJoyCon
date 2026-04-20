@@ -14,9 +14,56 @@
 </head>
 <body>
   <div class="hud">
-    <div id="conn">WS: connecting...</div>
-    <div id="slot">slot: -</div>
+    <div class="hud-left">
+      <div id="conn">WS: host not set</div>
+      <div id="host">host: not set</div>
+    </div>
+    <div class="hud-right">
+      <div id="slot">slot: -</div>
+    </div>
   </div>
+
+  <button
+    id="hostDrawerHandle"
+    class="host-drawer-handle"
+    type="button"
+    aria-label="Edit host target"
+    aria-controls="hostDrawer"
+    aria-expanded="false"
+  ></button>
+
+  <div id="hostDrawerBackdrop" class="host-drawer-backdrop" hidden></div>
+
+  <aside id="hostDrawer" class="host-drawer" aria-label="Host connection settings">
+    <form id="hostTargetForm" class="host-drawer-form">
+      <label class="host-drawer-label" for="hostTargetInput">Host</label>
+      <input
+        id="hostTargetInput"
+        class="host-drawer-input"
+        type="text"
+        inputmode="text"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="192.168.0.10:8081"
+      />
+      <label class="host-drawer-label" for="stickSensitivityInput">Stick sensitivity</label>
+      <div class="host-drawer-range-row">
+        <input
+          id="stickSensitivityInput"
+          class="host-drawer-range"
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value="0.68"
+        />
+        <output id="stickSensitivityValue" class="host-drawer-value" for="stickSensitivityInput">68%</output>
+      </div>
+      <button id="hostTargetSave" class="host-drawer-save" type="submit">Connect</button>
+      <div id="hostTargetStatus" class="host-drawer-status" aria-live="polite"></div>
+    </form>
+  </aside>
+
   <div id="latency" class="latency is-stale" aria-live="polite">--</div>
 
   <main class="controller" aria-label="JoyCon Web Pad">

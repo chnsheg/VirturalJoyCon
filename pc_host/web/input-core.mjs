@@ -153,7 +153,8 @@ export function applyRadialResponse(vector, config = DEFAULT_STICK_CONFIG) {
 
 export class AdaptiveStickProcessor {
   constructor(config = {}) {
-    this.config = { ...DEFAULT_STICK_CONFIG, ...config };
+    this.baseConfig = { ...DEFAULT_STICK_CONFIG, ...config };
+    this.config = { ...this.baseConfig };
     this.filter = new TwoAxisOneEuroFilter(this.config);
   }
 
@@ -165,6 +166,17 @@ export class AdaptiveStickProcessor {
       state: { x: 0, y: 0 },
       display: { x: 0, y: 0 },
     };
+  }
+
+  setResponseExponent(responseExponent) {
+    if (Number.isFinite(responseExponent)) {
+      this.config = {
+        ...this.baseConfig,
+        responseExponent,
+      };
+    }
+
+    return this.config;
   }
 
   sampleVector({ x, y, now }) {

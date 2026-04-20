@@ -19,6 +19,39 @@ from gamepad_session_manager import (
 )
 
 
+CORS_ALLOW_METHODS = "POST, OPTIONS"
+CORS_ALLOW_HEADERS = "Content-Type"
+CORS_MAX_AGE = "86400"
+
+
+def add_cors_headers(response: web.StreamResponse) -> web.StreamResponse:
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+    response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+    response.headers["Access-Control-Max-Age"] = CORS_MAX_AGE
+    return response
+
+
+def cors_json_response(payload: dict, status: int = 200) -> web.Response:
+    return add_cors_headers(web.json_response(payload, status=status))
+
+
+async def handle_input_options(request: web.Request) -> web.Response:
+    return add_cors_headers(web.Response(status=204))
+
+
+def create_web_app(hub: "WebGamepadHub") -> web.Application:
+    app = web.Application()
+    app.add_routes(
+        [
+            web.get("/ws", hub.handle_ws),
+            web.options("/input", handle_input_options),
+            web.post("/input", hub.handle_http_input),
+        ]
+    )
+    return app
+
+
 class WebGamepadHub:
     IDLE_PACKET = object()
     DEVICE_POOL_FULL = object()
@@ -194,7 +227,7 @@ class WebGamepadHub:
         try:
             packet = await request.json()
         except Exception:
-            return web.json_response({"ok": False, "reason": "bad_json"}, status=400)
+            return cors_json_response({"ok": False, "reason": "bad_json"}, status=400)
 
         transport = request.transport
         peername = transport.get_extra_info("peername") if transport else None
@@ -206,21 +239,21 @@ class WebGamepadHub:
         session_key = self._session_key(peer, packet)
         session = self._ensure_session_for_packet(session_key=session_key, peer=peer, packet=packet)
         if session is self.IDLE_PACKET:
-            return web.json_response({"ok": True, "idle": True})
+            return cors_json_response({"ok": True, "idle": True})
         if session is self.DEVICE_POOL_FULL:
-            return web.json_response({"ok": False, "reason": "device_pool_full"}, status=503)
+            return cors_json_response({"ok": False, "reason": "device_pool_full"}, status=503)
 
         if not session.accepts_packet(packet):
-            return web.json_response({"ok": True, "slot": session.user_index, "stale": True})
+            return cors_json_response({"ok": True, "slot": session.user_index, "stale": True})
 
         try:
             self.mapper.apply_packet(session.gamepad, packet)
         except Exception:
-            return web.json_response({"ok": False, "reason": "bad_packet"}, status=400)
+            return cors_json_response({"ok": False, "reason": "bad_packet"}, status=400)
 
         self._log_packet("http", session_key, session.user_index, peer, packet)
 
-        return web.json_response({"ok": True, "slot": session.user_index})
+        return cors_json_response({"ok": True, "slot": session.user_index})
 
 
 def get_candidate_ipv4_addresses() -> List[str]:
@@ -249,6 +282,38 @@ def build_access_urls(bind_host: str, http_port: int, candidate_ips: Iterable[st
         urls.append(f"http://{ip_text}:{http_port}")
 
     return sorted(dict.fromkeys(urls))
+
+
+def build_runtime_notes(bind_host: str, http_port: int, udp_port: int, access_urls: Iterable[str]) -> List[str]:
+    access_urls = list(access_urls)
+    if len(access_urls) == 1:
+        standalone_target = access_urls[0].removeprefix("http://")
+    elif len(access_urls) > 1:
+        standalone_target = "choose one LAN API URL above"
+    else:
+        standalone_target = "no private LAN API URL detected; enter this PC's reachable IPv4:port"
+
+    notes = [
+        f"[GamepadHost] Control API: http://{bind_host}:{http_port}",
+        f"[GamepadHost] WS endpoint: ws://{bind_host}:{http_port}/ws",
+        f"[GamepadHost] HTTP input: http://{bind_host}:{http_port}/input",
+        f"[GamepadHost] Standalone controller target: {standalone_target}",
+        f"[GamepadHost] TCP {http_port} must be reachable from the browser host",
+        f"[GamepadHost] UDP bridge (optional): {bind_host}:{udp_port}",
+        f"[GamepadHost] Firewall helper (TCP only): .\\scripts\\fix_network_access.ps1 -HttpPort {http_port} -SkipUdp",
+        f"[GamepadHost] Firewall helper (TCP + UDP): .\\scripts\\fix_network_access.ps1 -HttpPort {http_port} -UdpPort {udp_port}",
+        f"[GamepadHost] logs: {Path(__file__).parent / 'logs' / 'web_host.log'}",
+    ]
+
+    if access_urls:
+        notes = [
+            notes[0],
+            "[GamepadHost] Candidate LAN API URLs:",
+            *[f"  {url}" for url in access_urls],
+            *notes[1:],
+        ]
+
+    return notes
 
 
 async def start_udp_bridge(loop: asyncio.AbstractEventLoop, pool: VirtualDevicePool, mapper: GamepadMapper, host: str, port: int):
@@ -282,30 +347,7 @@ async def run_web_host(
     mapper = GamepadMapper(deadzone=deadzone)
     hub = WebGamepadHub(pool=pool, mapper=mapper)
 
-    @web.middleware
-    async def no_cache_middleware(request: web.Request, handler):
-        response = await handler(request)
-        if (
-            request.path == "/"
-            or request.path.endswith(".html")
-            or request.path.endswith(".js")
-            or request.path.endswith(".mjs")
-            or request.path.endswith(".css")
-        ):
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-        return response
-
-    app = web.Application(middlewares=[no_cache_middleware])
-    static_dir = Path(__file__).parent / "web"
-    app.add_routes(
-        [
-            web.get("/ws", hub.handle_ws),
-            web.post("/input", hub.handle_http_input),
-            web.static("/", str(static_dir), show_index=True),
-        ]
-    )
+    app = create_web_app(hub)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -317,16 +359,13 @@ async def run_web_host(
     cleanup_task = asyncio.create_task(cleanup_loop(pool=pool, timeout_sec=timeout_sec))
     access_urls = build_access_urls(bind_host=bind_host, http_port=http_port, candidate_ips=get_candidate_ipv4_addresses())
 
-    print(f"[GamepadHost] Web UI: http://{bind_host}:{http_port}")
-    if access_urls:
-        print("[GamepadHost] Access URLs:")
-        for url in access_urls:
-            print(f"  {url}")
-    print(f"[GamepadHost] WS endpoint: ws://{bind_host}:{http_port}/ws")
-    print(f"[GamepadHost] UDP bridge: {bind_host}:{udp_port}")
-    print(f"[GamepadHost] max_devices={max_devices}, timeout={timeout_sec}s")
-    print(f"[GamepadHost] Firewall helper: .\\scripts\\fix_network_access.ps1 -HttpPort {http_port} -UdpPort {udp_port}")
-    print(f"[GamepadHost] logs: {log_path}")
+    for line in build_runtime_notes(
+        bind_host=bind_host,
+        http_port=http_port,
+        udp_port=udp_port,
+        access_urls=access_urls,
+    ):
+        print(line)
     logging.info("host_started http=%s udp=%s max_devices=%s timeout=%s", http_port, udp_port, max_devices, timeout_sec)
 
     try:

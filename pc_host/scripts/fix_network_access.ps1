@@ -1,6 +1,7 @@
 param(
     [int]$HttpPort = 8081,
-    [int]$UdpPort = 28777
+    [int]$UdpPort = 28777,
+    [switch]$SkipUdp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,9 +16,16 @@ try {
 
 Write-Host '[2/4] Create firewall rules for JoyCon host...' -ForegroundColor Cyan
 $rules = @(
-    @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort },
-    @{ Name = "JoyCon-UDP-$UdpPort"; Protocol = 'UDP'; Port = $UdpPort }
+    @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort }
 )
+
+if (-not $SkipUdp) {
+    $rules += @{ Name = "JoyCon-UDP-$UdpPort"; Protocol = 'UDP'; Port = $UdpPort }
+}
+
+if ($SkipUdp) {
+    netsh advfirewall firewall delete rule name="JoyCon-UDP-$UdpPort" | Out-Null
+}
 
 foreach ($r in $rules) {
     netsh advfirewall firewall delete rule name="$($r.Name)" | Out-Null
@@ -37,4 +45,8 @@ Get-NetTCPConnection -LocalPort $HttpPort -State Listen |
     Format-Table -AutoSize
 
 Write-Host ''
-Write-Host "Done. Open on phone: http://<LAN_IP>:$HttpPort" -ForegroundColor Green
+if ($SkipUdp) {
+    Write-Host "Done. Standalone controller target: <LAN_IP>:$HttpPort" -ForegroundColor Green
+} else {
+    Write-Host "Done. Standalone controller target: <LAN_IP>:$HttpPort (UDP $UdpPort optional)" -ForegroundColor Green
+}

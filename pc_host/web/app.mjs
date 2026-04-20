@@ -10,11 +10,25 @@ import {
   createPacketSnapshot,
   vectorFromFrame,
 } from "./input-core.mjs";
+import {
+  buildTransportUrls,
+  getStickResponseExponent,
+  HostDrawerController,
+} from "./host-config.mjs";
 import { computeLayoutMetrics } from "./layout-core.mjs";
 
 const connEl = document.getElementById("conn");
 const slotEl = document.getElementById("slot");
 const latencyEl = document.getElementById("latency");
+const hostEl = document.getElementById("host");
+const hostDrawerEl = document.getElementById("hostDrawer");
+const hostDrawerHandleEl = document.getElementById("hostDrawerHandle");
+const hostDrawerBackdropEl = document.getElementById("hostDrawerBackdrop");
+const hostTargetFormEl = document.getElementById("hostTargetForm");
+const hostTargetInputEl = document.getElementById("hostTargetInput");
+const stickSensitivityInputEl = document.getElementById("stickSensitivityInput");
+const stickSensitivityValueEl = document.getElementById("stickSensitivityValue");
+const hostTargetStatusEl = document.getElementById("hostTargetStatus");
 const controllerEl = document.querySelector(".controller");
 
 window.addEventListener("error", (event) => {
@@ -69,6 +83,20 @@ const state = {
     rt: 0,
   },
 };
+const hostDrawerController = new HostDrawerController({ storage: window.localStorage });
+const initialDrawerSnapshot = hostDrawerController.snapshot();
+const stickProcessors = {
+  left: new AdaptiveStickProcessor({
+    responseExponent: getStickResponseExponent(initialDrawerSnapshot.stickSensitivity),
+  }),
+  right: new AdaptiveStickProcessor({
+    responseExponent: getStickResponseExponent(initialDrawerSnapshot.stickSensitivity),
+  }),
+};
+let remoteEndpoints = hostDrawerController.hostTarget
+  ? buildTransportUrls(hostDrawerController.hostTarget)
+  : null;
+let suppressNextReconnect = false;
 
 let ws = null;
 let reconnectTimer = null;
@@ -93,6 +121,70 @@ function updateConnectionText(text) {
 
 function updateSlot(slot, mode = transportMode) {
   slotEl.textContent = `slot: ${slot} mode:${mode}`;
+}
+
+function clearSlot(mode = transportMode) {
+  updateSlot("-", mode);
+}
+
+function updateHostText() {
+  const snapshot = hostDrawerController.snapshot();
+  hostEl.textContent = snapshot.hostTarget ? `host: ${snapshot.hostTarget}` : "host: not set";
+  document.body.classList.toggle("host-configured", Boolean(snapshot.hostTarget));
+}
+
+function formatStickSensitivityValue(sensitivity) {
+  return `${Math.round(sensitivity * 100)}%`;
+}
+
+function applyStickSensitivitySetting(sensitivity) {
+  const responseExponent = getStickResponseExponent(sensitivity);
+  stickProcessors.left.setResponseExponent(responseExponent);
+  stickProcessors.right.setResponseExponent(responseExponent);
+
+  if (stickSensitivityInputEl) {
+    stickSensitivityInputEl.value = String(sensitivity);
+  }
+
+  if (stickSensitivityValueEl) {
+    stickSensitivityValueEl.textContent = formatStickSensitivityValue(sensitivity);
+  }
+}
+
+function renderHostDrawer(statusMessage = "") {
+  const snapshot = hostDrawerController.snapshot();
+  hostDrawerEl.classList.toggle("is-open", snapshot.isOpen);
+  hostDrawerHandleEl.classList.toggle("is-active", snapshot.isOpen);
+  hostDrawerHandleEl.setAttribute("aria-expanded", snapshot.isOpen ? "true" : "false");
+  hostDrawerBackdropEl.hidden = !snapshot.isOpen;
+  hostDrawerBackdropEl.classList.toggle("is-visible", snapshot.isOpen);
+  hostTargetInputEl.value = snapshot.isOpen ? hostTargetInputEl.value || snapshot.hostTarget : snapshot.hostTarget;
+  hostTargetStatusEl.textContent = snapshot.error || statusMessage;
+  applyStickSensitivitySetting(snapshot.stickSensitivity);
+  updateHostText();
+}
+
+function getWsUrl() {
+  return remoteEndpoints?.wsUrl ?? "";
+}
+
+function getHttpUrl() {
+  return remoteEndpoints?.httpUrl ?? "";
+}
+
+function closeSocketAndReconnectTimer() {
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  if (ws) {
+    suppressNextReconnect = true;
+    try {
+      ws.close();
+    } catch {}
+    ws = null;
+  }
 }
 
 function renderLatency(nowMs = performance.now()) {
@@ -194,9 +286,8 @@ function setStickState(stickKey, knob, vector, radiusPx) {
   knob.style.transform = `translate(${Math.round(vector.x * radiusPx)}px, ${Math.round(-vector.y * radiusPx)}px)`;
 }
 
-function bindStick(stickEl, stickKey) {
+function bindStick(stickEl, stickKey, processor) {
   const knob = stickEl.querySelector(".stick-knob");
-  const processor = new AdaptiveStickProcessor();
   const interaction = new LayoutGestureLease(layoutInteractionLock);
   let activePointerId = null;
   let activeFrame = null;
@@ -328,6 +419,13 @@ function bindTrigger(control, triggerKey) {
 }
 
 async function sendHttpFallback(nowMs) {
+  const httpUrl = getHttpUrl();
+  if (!httpUrl) {
+    updateConnectionText("WS: host not set");
+    clearSlot("idle");
+    return false;
+  }
+
   if (httpSending) {
     httpQueued = true;
     return false;
@@ -343,7 +441,7 @@ async function sendHttpFallback(nowMs) {
   const requestStartedAt = performance.now();
 
   try {
-    const response = await fetch("/input", {
+    const response = await fetch(httpUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: payload.serialized,
@@ -385,50 +483,68 @@ function scheduleReconnect(delayMs = 900) {
 }
 
 function connectWS() {
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${protocol}://${location.host}/ws`;
+  const url = getWsUrl();
+  if (!url) {
+    transportMode = "ws";
+    updateConnectionText("WS: host not set");
+    clearSlot("idle");
+    return;
+  }
 
+  clearSlot("ws");
   updateConnectionText(`WS: connecting ${url}`);
 
   try {
-    ws = new WebSocket(url);
+    const socket = new WebSocket(url);
+    ws = socket;
+
+    socket.addEventListener("open", () => {
+      transportMode = "ws";
+      lastPingSentAt = -Infinity;
+      updateConnectionText("WS: connected");
+      markDirty(true);
+    });
+
+    socket.addEventListener("close", () => {
+      if (ws === socket) {
+        ws = null;
+      }
+
+      if (suppressNextReconnect) {
+        suppressNextReconnect = false;
+        return;
+      }
+
+      transportMode = "http";
+      updateConnectionText("WS: closed, HTTP fallback active");
+      clearSlot("http");
+      renderLatency(performance.now());
+      scheduleReconnect(900);
+    });
+
+    socket.addEventListener("error", () => {
+      transportMode = "http";
+      updateConnectionText("WS: error, HTTP fallback active");
+      clearSlot("http");
+      renderLatency(performance.now());
+    });
+
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === "slot" && Number.isInteger(message.slot)) {
+          updateSlot(message.slot, "ws");
+        } else if (message.type === "pong" && Number.isFinite(message.client_sent_at_ms)) {
+          latencyTracker.noteRoundTrip(performance.now() - Number(message.client_sent_at_ms), performance.now());
+          renderLatency(performance.now());
+        }
+      } catch {}
+    });
   } catch (error) {
     updateConnectionText(`WS ctor error: ${error?.message || "unknown"}`);
     scheduleReconnect(1200);
     return;
   }
-
-  ws.addEventListener("open", () => {
-    transportMode = "ws";
-    lastPingSentAt = -Infinity;
-    updateConnectionText("WS: connected");
-    markDirty(true);
-  });
-
-  ws.addEventListener("close", () => {
-    transportMode = "http";
-    updateConnectionText("WS: closed, HTTP fallback active");
-    renderLatency(performance.now());
-    scheduleReconnect(900);
-  });
-
-  ws.addEventListener("error", () => {
-    transportMode = "http";
-    updateConnectionText("WS: error, HTTP fallback active");
-    renderLatency(performance.now());
-  });
-
-  ws.addEventListener("message", (event) => {
-    try {
-      const message = JSON.parse(event.data);
-      if (message.type === "slot" && Number.isInteger(message.slot)) {
-        updateSlot(message.slot, "ws");
-      } else if (message.type === "pong" && Number.isFinite(message.client_sent_at_ms)) {
-        latencyTracker.noteRoundTrip(performance.now() - Number(message.client_sent_at_ms), performance.now());
-        renderLatency(performance.now());
-      }
-    } catch {}
-  });
 }
 
 function maybeSendWsPing(nowMs) {
@@ -459,14 +575,19 @@ document.querySelectorAll("[data-btn]").forEach((element) => {
   bindHoldButton(element, element.dataset.btn);
 });
 
-bindStick(document.getElementById("leftStick"), "left");
-bindStick(document.getElementById("rightStick"), "right");
+bindStick(document.getElementById("leftStick"), "left", stickProcessors.left);
+bindStick(document.getElementById("rightStick"), "right", stickProcessors.right);
 bindTrigger(document.getElementById("leftTrigger"), "lt");
 bindTrigger(document.getElementById("rightTrigger"), "rt");
 
 window.addEventListener("resize", requestResponsiveLayout);
 window.addEventListener("orientationchange", () => window.setTimeout(requestResponsiveLayout, 60));
 window.addEventListener("pagehide", () => {
+  const httpUrl = getHttpUrl();
+  if (!httpUrl) {
+    return;
+  }
+
   const payload = createPacketSnapshot(
     {
       ...state,
@@ -481,10 +602,49 @@ window.addEventListener("pagehide", () => {
     performance.now(),
   );
 
-  navigator.sendBeacon?.("/input", new Blob([JSON.stringify(payload)], { type: "application/json" }));
+  navigator.sendBeacon?.(httpUrl, new Blob([JSON.stringify(payload)], { type: "application/json" }));
+});
+
+hostDrawerHandleEl.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  hostDrawerController.open();
+  renderHostDrawer();
+  hostTargetInputEl.focus();
+  hostTargetInputEl.select();
+});
+
+hostDrawerBackdropEl.addEventListener("click", () => {
+  hostDrawerController.close();
+  renderHostDrawer();
+});
+
+stickSensitivityInputEl?.addEventListener("input", () => {
+  const result = hostDrawerController.updateStickSensitivity(stickSensitivityInputEl.value);
+  if (!result.ok) {
+    renderHostDrawer();
+    return;
+  }
+
+  renderHostDrawer();
+});
+
+hostTargetFormEl.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const result = hostDrawerController.submit(hostTargetInputEl.value);
+  if (!result.ok) {
+    renderHostDrawer();
+    return;
+  }
+
+  remoteEndpoints = result.endpoints;
+  renderHostDrawer("saved");
+  closeSocketAndReconnectTimer();
+  connectWS();
 });
 
 applyResponsiveLayout();
+updateHostText();
+renderHostDrawer();
 connectWS();
 renderLatency(performance.now());
 window.requestAnimationFrame(transportLoop);
