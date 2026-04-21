@@ -17,6 +17,7 @@ try {
 Write-Host '[2/4] Create firewall rules for JoyCon host...' -ForegroundColor Cyan
 $rules = @(
     @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort },
+    @{ Name = "JoyCon-MediaMTX-WebRTC-8889"; Protocol = 'TCP'; Port = 8889 },
     @{ Name = "JoyCon-WebRTC-UDP-8189"; Protocol = 'UDP'; Port = 8189 }
 )
 
@@ -47,7 +48,7 @@ Get-NetTCPConnection -LocalPort $HttpPort -State Listen |
 
 Write-Host ''
 if ($SkipUdp) {
-    Write-Host "Done. Standalone controller target: <LAN_IP>:$HttpPort" -ForegroundColor Green
+    Write-Host "Done. Host target: <LAN_IP>:$HttpPort (Streaming gateway target, MediaMTX 8889/TCP and WebRTC 8189/UDP open)" -ForegroundColor Green
 } else {
-    Write-Host "Done. Standalone controller target: <LAN_IP>:$HttpPort (UDP $UdpPort optional, WebRTC UDP 8189 open)" -ForegroundColor Green
+    Write-Host "Done. Host target: <LAN_IP>:$HttpPort (Streaming gateway target, MediaMTX 8889/TCP, WebRTC 8189/UDP, legacy UDP $UdpPort optional)" -ForegroundColor Green
 }

@@ -12,6 +12,12 @@ Run inside `pc_host`:
 pip install -r requirements.txt
 ```
 
+You also need these non-Python runtime dependencies before the streaming stack will work:
+
+- `mediamtx.exe` available on `PATH` or passed to `.\scripts\start_media_stack.ps1`
+- `ffmpeg.exe` available on `PATH` or passed to `.\scripts\start_stream_publisher.ps1`
+- A valid Windows audio capture device for FFmpeg WASAPI input, for example `virtual-audio-capturer`
+
 ### 2. Open the Windows firewall when needed
 
 Run inside `pc_host` from an elevated PowerShell session:
@@ -21,7 +27,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\fix_network_access.ps1 -HttpPort 8082 -SkipUdp
 ```
 
-The helper keeps the standalone TCP rule behavior and also opens `8189/UDP` for WebRTC.
+The helper keeps the standalone TCP rule behavior and also opens `8889/TCP` for MediaMTX plus `8189/UDP` for WebRTC.
 
 ### 3. Start the control gateway
 

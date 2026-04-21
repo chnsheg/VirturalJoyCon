@@ -4,17 +4,20 @@ param(
     [int]$Width = 1280,
     [int]$Height = 720,
     [int]$Fps = 60,
-    [string]$VideoDevice = "desktop",
+    [string]$VideoDevice = "ddagrab",
     [string]$AudioDevice = "virtual-audio-capturer"
 )
 
 $ErrorActionPreference = 'Stop'
+$videoSource = if ($VideoDevice -eq "desktop" -or $VideoDevice -eq "ddagrab") {
+    "ddagrab=framerate=$Fps:video_size=$Width`x$Height"
+} else {
+    "$VideoDevice=framerate=$Fps:video_size=$Width`x$Height"
+}
 
 & $FfmpegExe `
-    -f ddagrab `
-    -framerate $Fps `
-    -video_size "$Width`x$Height" `
-    -i $VideoDevice `
+    -f lavfi `
+    -i $videoSource `
     -f wasapi `
     -i $AudioDevice `
     -c:v h264_nvenc `

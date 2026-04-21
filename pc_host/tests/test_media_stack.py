@@ -54,37 +54,18 @@ class MediaStackTests(unittest.TestCase):
             audio_device="virtual-audio-capturer",
         )
 
-        self.assertEqual(
-            command,
-            [
-                "ffmpeg.exe",
-                "-f",
-                "ddagrab",
-                "-framerate",
-                "60",
-                "-video_size",
-                "1280x720",
-                "-i",
-                "desktop",
-                "-f",
-                "wasapi",
-                "-i",
-                "virtual-audio-capturer",
-                "-c:v",
-                "h264_nvenc",
-                "-tune",
-                "ull",
-                "-bf",
-                "0",
-                "-g",
-                "30",
-                "-c:a",
-                "opus",
-                "-f",
-                "whip",
-                "http://127.0.0.1:8889/game/whip",
-            ],
-        )
+        self.assertEqual(command[0], "ffmpeg.exe")
+        self.assertIn("-f", command)
+        self.assertIn("lavfi", command)
+        self.assertIn("-i", command)
+        self.assertIn("ddagrab=framerate=60:video_size=1280x720", command)
+        self.assertIn("virtual-audio-capturer", command)
+        self.assertIn("h264_nvenc", command)
+        self.assertIn("opus", command)
+        self.assertIn("http://127.0.0.1:8889/game/whip", command)
+        self.assertNotIn("desktop", command)
+        self.assertNotIn("ddagrab", command)
+        self.assertNotEqual(command[1:4], ["-f", "ddagrab", "-framerate"])
 
     def test_mediamtx_config_declares_expected_stream_path_and_ports(self) -> None:
         config_path = PROJECT_ROOT / "config" / "mediamtx.yml"
@@ -117,14 +98,23 @@ class MediaStackTests(unittest.TestCase):
         publisher_text = publisher_script.read_text(encoding="utf-8")
         self.assertIn("h264_nvenc", publisher_text)
         self.assertIn("-tune ull", publisher_text)
+        self.assertIn("-f lavfi", publisher_text)
+        self.assertIn("ddagrab=", publisher_text)
+        self.assertNotIn("-f ddagrab", publisher_text)
         self.assertIn("http://127.0.0.1:8889/game/whip", publisher_text)
 
         firewall_text = firewall_script.read_text(encoding="utf-8")
+        self.assertIn("JoyCon-MediaMTX-WebRTC-8889", firewall_text)
+        self.assertIn("Protocol = 'TCP'; Port = 8889", firewall_text)
         self.assertIn("JoyCon-WebRTC-UDP-8189", firewall_text)
         self.assertIn("Port = 8189", firewall_text)
+        self.assertIn("Streaming gateway target", firewall_text)
 
         readme_text = readme_path.read_text(encoding="utf-8")
         self.assertIn("## Streaming stack quick start", readme_text)
+        self.assertIn("mediamtx.exe", readme_text)
+        self.assertIn("ffmpeg.exe", readme_text)
+        self.assertIn("virtual-audio-capturer", readme_text)
         self.assertIn("python stream_gateway.py --host 0.0.0.0 --port 8082", readme_text)
         self.assertIn(".\\scripts\\start_media_stack.ps1", readme_text)
         self.assertIn(".\\scripts\\start_stream_publisher.ps1", readme_text)

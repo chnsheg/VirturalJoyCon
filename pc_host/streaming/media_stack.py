@@ -22,16 +22,14 @@ def build_ffmpeg_publish_command(
     video_device: str,
     audio_device: str,
 ) -> list[str]:
+    video_filter = "ddagrab" if video_device == "desktop" else video_device
+    video_source = f"{video_filter}=framerate={fps}:video_size={width}x{height}"
     return [
         ffmpeg_exe,
         "-f",
-        "ddagrab",
-        "-framerate",
-        str(fps),
-        "-video_size",
-        f"{width}x{height}",
+        "lavfi",
         "-i",
-        video_device,
+        video_source,
         "-f",
         "wasapi",
         "-i",
