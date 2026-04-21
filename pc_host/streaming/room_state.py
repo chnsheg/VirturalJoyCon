@@ -123,6 +123,22 @@ class RoomRegistry:
             return []
         return self._sweep_room(room)
 
+    def snapshot(self, room_id: str) -> dict:
+        room = self._room(room_id)
+        return {
+            "room_id": room_id,
+            "players": [
+                {
+                    "player_id": member.player_id,
+                    "role": member.role,
+                    "seat_index": member.seat_index,
+                    "seat_epoch": member.seat_epoch,
+                    "connected": member.connected,
+                }
+                for member in room.members.values()
+            ],
+        }
+
     def _room(self, room_id: str) -> _Room:
         if room_id not in self._rooms:
             self._rooms[room_id] = _Room(room_id=room_id, members={})
