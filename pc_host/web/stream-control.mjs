@@ -10,6 +10,23 @@ async function readJsonResponse(response) {
   return response.json();
 }
 
+async function waitForIceGatheringComplete(peer) {
+  if (!peer || peer.iceGatheringState === "complete" || typeof peer.addEventListener !== "function") {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const handleIceGatheringStateChange = () => {
+      if (peer.iceGatheringState === "complete") {
+        peer.removeEventListener?.("icegatheringstatechange", handleIceGatheringStateChange);
+        resolve();
+      }
+    };
+
+    peer.addEventListener("icegatheringstatechange", handleIceGatheringStateChange);
+  });
+}
+
 export function createInputChannelOptions() {
   return {
     ordered: false,
@@ -67,6 +84,8 @@ export async function negotiateControlPeer({
   const channel = peer.createDataChannel(CONTROL_CHANNEL_LABEL, createControlChannelOptions());
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
+  await waitForIceGatheringComplete(peer);
+  const description = peer.localDescription ?? offer;
 
   const urls = buildRoomApiUrls(hostTarget);
   const answer = await readJsonResponse(
@@ -78,7 +97,7 @@ export async function negotiateControlPeer({
           roomId,
           playerId,
           reconnectToken,
-          description: offer,
+          description,
         }),
       ),
     }),

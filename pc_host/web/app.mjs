@@ -151,7 +151,9 @@ function renderRoomState() {
 }
 
 function updateStreamDegradedState() {
-  streamState.degraded = streamState.role === "player" && controlHudMode !== "webrtc";
+  streamState.degraded =
+    streamState.role === "player"
+    && (controlHudMode !== "webrtc" || Boolean(streamState.lastError));
   renderRoomState();
 }
 
@@ -230,8 +232,21 @@ async function connectStreaming(hostTarget) {
     updateStreamDegradedState();
 
     try {
-      activeMediaPeer = await connectMedia(target);
-    } catch {}
+      const mediaPeer = await connectMedia(target);
+      if (currentAttempt !== streamAttempt) {
+        closeStreamPeer(mediaPeer);
+        return;
+      }
+      activeMediaPeer = mediaPeer;
+      streamState.lastError = "";
+      updateStreamDegradedState();
+    } catch {
+      if (currentAttempt !== streamAttempt) {
+        return;
+      }
+      streamState.lastError = "stream unavailable";
+      updateStreamDegradedState();
+    }
 
     if (joined.role !== "player") {
       setControlHudMode("idle");
@@ -257,6 +272,9 @@ async function connectStreaming(hostTarget) {
       activeControlPeer = negotiated.peer;
       setControlHudMode("webrtc");
     } catch {
+      if (currentAttempt !== streamAttempt) {
+        return;
+      }
       setControlHudMode(transportMode === "http" ? "http" : "ws");
     }
   } catch {

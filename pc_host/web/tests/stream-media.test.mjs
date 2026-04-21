@@ -30,6 +30,7 @@ test("subscribeViaWhep posts an SDP offer and attaches remote tracks", async () 
     localDescription: null,
     remoteDescription: null,
     transceivers: [],
+    iceGatheringState: "new",
     addTransceiver(kind, options) {
       this.transceivers.push({ kind, options });
     },
@@ -40,7 +41,11 @@ test("subscribeViaWhep posts an SDP offer and attaches remote tracks", async () 
       return { type: "offer", sdp: "media-offer" };
     },
     async setLocalDescription(description) {
-      this.localDescription = description;
+      this.localDescription = {
+        type: description.type,
+        sdp: "media-offer-with-ice",
+      };
+      this.iceGatheringState = "complete";
     },
     async setRemoteDescription(description) {
       this.remoteDescription = description;
@@ -73,7 +78,7 @@ test("subscribeViaWhep posts an SDP offer and attaches remote tracks", async () 
   ]);
   assert.equal(fetchCalls[0].url, "http://192.168.0.10:8889/game/whep");
   assert.equal(fetchCalls[0].init.method, "POST");
-  assert.equal(fetchCalls[0].init.body, "media-offer");
+  assert.equal(fetchCalls[0].init.body, "media-offer-with-ice");
   assert.deepEqual(peer.remoteDescription, { type: "answer", sdp: "media-answer" });
 
   const stream = { id: "remote-stream" };

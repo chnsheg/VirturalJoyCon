@@ -155,6 +155,7 @@ function installAppHarness({
   savedStickSensitivity,
   fakeLocationHost = "example.invalid",
   enableRtc = false,
+  fetchImpl = null,
 }) {
   const originalGlobals = new Map();
   for (const key of [
@@ -238,6 +239,46 @@ function installAppHarness({
   const webSockets = [];
   const fetchCalls = [];
   const animationFrameCallbacks = [];
+
+  function defaultFetch(url, init = {}) {
+    if (String(url).includes("/api/room/join")) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            room_id: "living-room",
+            player_id: "uuid-fixed",
+            role: "player",
+            seat_index: 1,
+            seat_epoch: 1,
+            reconnect_token: "reconnect-fixed",
+          };
+        },
+      };
+    }
+
+    if (String(url).includes("/api/control/offer")) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            type: "answer",
+            sdp: "control-answer",
+          };
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      async json() {
+        return {};
+      },
+      async text() {
+        return "v=0\r\n";
+      },
+    };
+  }
 
   const document = {
     body: {
@@ -379,31 +420,11 @@ function installAppHarness({
     writable: true,
     value: async (url, init = {}) => {
       fetchCalls.push([url, init]);
-      if (String(url).includes("/api/room/join")) {
-        return {
-          ok: true,
-          async json() {
-            return {
-              room_id: "living-room",
-              player_id: "uuid-fixed",
-              role: "player",
-              seat_index: 1,
-              seat_epoch: 1,
-              reconnect_token: "reconnect-fixed",
-            };
-          },
-        };
+      if (typeof fetchImpl === "function") {
+        return fetchImpl(url, init, { fetchCalls });
       }
 
-      return {
-        ok: true,
-        async json() {
-          return {};
-        },
-        async text() {
-          return "v=0\r\n";
-        },
-      };
+      return defaultFetch(url, init);
     },
   });
   Object.defineProperty(globalThis, "WebSocket", {
@@ -631,4 +652,141 @@ test("transport hud follows later http fallback after rtc negotiation", async (t
   harness.webSockets[0].serverClose();
 
   assert.equal(harness.transportModeEl.textContent, "control: http degraded");
+});
+
+test("media failure is surfaced as a visible stream error", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    fetchImpl: async (url) => {
+      if (String(url).includes("/game/whep")) {
+        return {
+          ok: false,
+          status: 503,
+          async text() {
+            return "";
+          },
+        };
+      }
+
+      if (String(url).includes("/api/control/offer")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              type: "answer",
+              sdp: "control-answer",
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            room_id: "living-room",
+            player_id: "uuid-fixed",
+            role: "player",
+            seat_index: 1,
+            seat_epoch: 1,
+            reconnect_token: "reconnect-fixed",
+          };
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-media-failure`);
+  await harness.settle();
+
+  assert.equal(harness.roomStatusEl.textContent, "stream unavailable");
+});
+
+test("stale media completion does not overwrite a newer host attempt", async (t) => {
+  let releaseFirstMedia;
+  const firstMediaPromise = new Promise((resolve) => {
+    releaseFirstMedia = resolve;
+  });
+
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    fetchImpl: async (url) => {
+      if (String(url).includes("192.168.0.10") && String(url).includes("/api/room/join")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 1,
+              seat_epoch: 1,
+              reconnect_token: "token-1",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("192.168.0.10") && String(url).includes("/game/whep")) {
+        await firstMediaPromise;
+        return {
+          ok: true,
+          async text() {
+            return "first-answer";
+          },
+        };
+      }
+
+      if (String(url).includes("192.168.0.11") && String(url).includes("/api/room/join")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 2,
+              seat_epoch: 2,
+              reconnect_token: "token-2",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("192.168.0.11") && String(url).includes("/game/whep")) {
+        return {
+          ok: true,
+          async text() {
+            return "second-answer";
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {
+            type: "answer",
+            sdp: "control-answer",
+          };
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-host-race`);
+  await harness.settle();
+
+  harness.hostTargetInputEl.value = "192.168.0.11:8081";
+  harness.hostTargetFormEl.dispatch("submit");
+  await harness.settle();
+
+  releaseFirstMedia();
+  await harness.settle();
+
+  assert.equal(harness.roomStatusEl.textContent, "2P");
 });

@@ -53,6 +53,7 @@ test("negotiateControlPeer uses the supported control channel contract", async (
     localDescription: null,
     remoteDescription: null,
     channels: [],
+    iceGatheringState: "new",
     createDataChannel(label, options) {
       const channel = { label, options };
       this.channels.push(channel);
@@ -62,7 +63,11 @@ test("negotiateControlPeer uses the supported control channel contract", async (
       return { type: "offer", sdp: "control-offer" };
     },
     async setLocalDescription(description) {
-      this.localDescription = description;
+      this.localDescription = {
+        type: description.type,
+        sdp: "control-offer-with-ice",
+      };
+      this.iceGatheringState = "complete";
     },
     async setRemoteDescription(description) {
       this.remoteDescription = description;
@@ -98,7 +103,7 @@ test("negotiateControlPeer uses the supported control channel contract", async (
     player_id: "player-1",
     reconnect_token: "token-1",
     type: "offer",
-    sdp: "control-offer",
+    sdp: "control-offer-with-ice",
   });
   assert.deepEqual(peer.remoteDescription, { type: "answer", sdp: "control-answer" });
 });

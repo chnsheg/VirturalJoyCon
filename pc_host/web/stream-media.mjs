@@ -5,6 +5,23 @@ function normalizeHostTarget(hostTarget) {
     .replace(/\/+$/, "");
 }
 
+async function waitForIceGatheringComplete(peer) {
+  if (!peer || peer.iceGatheringState === "complete" || typeof peer.addEventListener !== "function") {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const handleIceGatheringStateChange = () => {
+      if (peer.iceGatheringState === "complete") {
+        peer.removeEventListener?.("icegatheringstatechange", handleIceGatheringStateChange);
+        resolve();
+      }
+    };
+
+    peer.addEventListener("icegatheringstatechange", handleIceGatheringStateChange);
+  });
+}
+
 export function buildWhepUrl(hostTarget) {
   const [host] = normalizeHostTarget(hostTarget).split(":");
   return `http://${host}:8889/game/whep`;
@@ -35,11 +52,13 @@ export async function subscribeViaWhep({
 
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
+  await waitForIceGatheringComplete(peer);
+  const description = peer.localDescription ?? offer;
 
   const response = await fetchImpl(buildWhepUrl(hostTarget), {
     method: "POST",
     headers: { "Content-Type": "application/sdp" },
-    body: offer.sdp,
+    body: description.sdp,
   });
   if (!response?.ok) {
     throw new Error(`whep_${response?.status ?? "error"}`);
