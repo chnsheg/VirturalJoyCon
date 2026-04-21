@@ -123,6 +123,17 @@ class RoomRegistry:
             return []
         return self._sweep_room(room)
 
+    def require_player(self, room_id: str, player_id: str, reconnect_token: str) -> RoomMember:
+        room = self._rooms.get(room_id)
+        if room is None:
+            raise ValueError("bad_reconnect_token")
+
+        self._delete_expired_player_reservations(room)
+        member = room.members.get(player_id)
+        if member is None or member.reconnect_token != reconnect_token:
+            raise ValueError("bad_reconnect_token")
+        return member
+
     def snapshot(self, room_id: str) -> dict:
         room = self._rooms.get(room_id)
         if room is None:

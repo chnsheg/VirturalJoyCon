@@ -3,6 +3,7 @@ from collections.abc import Mapping
 
 from aiohttp import web
 
+from streaming.control_peer import ControlPeerFactory
 from streaming.room_state import RoomRegistry
 
 
@@ -37,10 +38,15 @@ def _read_required_text(mapping: Mapping[str, object], field_name: str) -> str:
     return value
 
 
-def create_stream_app(room_registry: RoomRegistry | None = None) -> web.Application:
+def create_stream_app(
+    room_registry: RoomRegistry | None = None,
+    control_peer_factory: ControlPeerFactory | None = None,
+) -> web.Application:
     app = web.Application()
     room_registry_key = web.AppKey("room_registry", RoomRegistry)
+    control_peer_factory_key = web.AppKey("control_peer_factory", ControlPeerFactory)
     app[room_registry_key] = room_registry or RoomRegistry()
+    app[control_peer_factory_key] = control_peer_factory or ControlPeerFactory()
 
     async def handle_join(request: web.Request) -> web.Response:
         try:
@@ -80,6 +86,43 @@ def create_stream_app(room_registry: RoomRegistry | None = None) -> web.Applicat
         snapshot = request.app[room_registry_key].snapshot(room_id)
         return cors_json_response(snapshot)
 
+    async def handle_control_offer(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            return cors_json_response({"ok": False, "reason": "bad_json"}, status=400)
+
+        if not isinstance(payload, Mapping):
+            return cors_json_response({"ok": False, "reason": "invalid_body"}, status=400)
+
+        try:
+            room_id = _read_required_text(payload, "room_id")
+            player_id = _read_required_text(payload, "player_id")
+            reconnect_token = _read_required_text(payload, "reconnect_token")
+            offer_sdp = _read_required_text(payload, "sdp")
+            offer_type = "offer"
+            if "type" in payload:
+                offer_type = _read_required_text(payload, "type")
+
+            member = request.app[room_registry_key].require_player(
+                room_id=room_id,
+                player_id=player_id,
+                reconnect_token=reconnect_token,
+            )
+            if member.role != "player":
+                raise ValueError("spectator_cannot_control")
+
+            answer = await request.app[control_peer_factory_key].answer_offer(
+                offer_sdp=offer_sdp,
+                offer_type=offer_type,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            status = 409 if reason in {"bad_reconnect_token", "spectator_cannot_control"} else 400
+            return cors_json_response({"ok": False, "reason": reason}, status=status)
+
+        return cors_json_response(answer)
+
     async def handle_options(request: web.Request) -> web.Response:
         return add_cors_headers(web.Response(status=204))
 
@@ -89,6 +132,8 @@ def create_stream_app(room_registry: RoomRegistry | None = None) -> web.Applicat
             web.post("/api/room/join", handle_join),
             web.options("/api/room/status", handle_options),
             web.get("/api/room/status", handle_status),
+            web.options("/api/control/offer", handle_options),
+            web.post("/api/control/offer", handle_control_offer),
         ]
     )
     return app

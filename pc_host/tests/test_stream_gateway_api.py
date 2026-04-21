@@ -8,6 +8,15 @@ from stream_gateway import create_stream_app
 from streaming.room_state import RoomRegistry
 
 
+class FakeControlPeerFactory:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    async def answer_offer(self, offer_sdp: str, offer_type: str = "offer") -> dict:
+        self.calls.append({"offer_sdp": offer_sdp, "offer_type": offer_type})
+        return {"sdp": "fake-answer", "type": "answer"}
+
+
 class StreamGatewayCliTests(unittest.TestCase):
     def test_main_runs_gateway_with_cli_host_and_port(self) -> None:
         app = object()
@@ -36,7 +45,11 @@ class StreamGatewayApiTests(AioHTTPTestCase):
     async def get_application(self):
         self.now = [100.0]
         self.registry = RoomRegistry(max_seats=4, seat_hold_seconds=10.0, now_fn=lambda: self.now[0])
-        return create_stream_app(room_registry=self.registry)
+        self.control_peer_factory = FakeControlPeerFactory()
+        return create_stream_app(
+            room_registry=self.registry,
+            control_peer_factory=self.control_peer_factory,
+        )
 
     async def test_join_returns_player_seat_and_reconnect_token(self) -> None:
         response = await self.client.post(
@@ -193,6 +206,118 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertIn("OPTIONS", options_response.headers["Access-Control-Allow-Methods"])
         self.assertEqual(join_response.headers["Access-Control-Allow-Origin"], "*")
         self.assertEqual(status_response.headers["Access-Control-Allow-Origin"], "*")
+
+    async def test_control_offer_returns_answer_for_active_player(self) -> None:
+        join = await self.client.post(
+            "/api/room/join",
+            json={"room_id": "living-room", "player_id": "alice"},
+        )
+        joined = await join.json()
+
+        response = await self.client.post(
+            "/api/control/offer",
+            json={
+                "room_id": "living-room",
+                "player_id": joined["player_id"],
+                "reconnect_token": joined["reconnect_token"],
+                "sdp": "fake-offer",
+                "type": "offer",
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload, {"sdp": "fake-answer", "type": "answer"})
+        self.assertEqual(
+            self.control_peer_factory.calls,
+            [{"offer_sdp": "fake-offer", "offer_type": "offer"}],
+        )
+        self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+
+    async def test_control_offer_rejects_spectators(self) -> None:
+        for idx in range(4):
+            await self.client.post(
+                "/api/room/join",
+                json={"room_id": "living-room", "player_id": f"p{idx}"},
+            )
+
+        join = await self.client.post(
+            "/api/room/join",
+            json={"room_id": "living-room", "player_id": "spectator"},
+        )
+        joined = await join.json()
+
+        response = await self.client.post(
+            "/api/control/offer",
+            json={
+                "room_id": "living-room",
+                "player_id": joined["player_id"],
+                "reconnect_token": joined["reconnect_token"],
+                "sdp": "fake-offer",
+                "type": "offer",
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 409)
+        self.assertEqual(payload, {"ok": False, "reason": "spectator_cannot_control"})
+        self.assertEqual(self.control_peer_factory.calls, [])
+        self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+
+    async def test_control_offer_rejects_bad_reconnect_token_without_creating_room(self) -> None:
+        response = await self.client.post(
+            "/api/control/offer",
+            json={
+                "room_id": "missing-room",
+                "player_id": "alice",
+                "reconnect_token": "wrong-token",
+                "sdp": "fake-offer",
+                "type": "offer",
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 409)
+        self.assertEqual(payload, {"ok": False, "reason": "bad_reconnect_token"})
+        self.assertEqual(self.registry._rooms, {})
+        self.assertEqual(self.control_peer_factory.calls, [])
+
+    async def test_control_offer_validates_bad_json_invalid_body_and_missing_fields(self) -> None:
+        bad_json_response = await self.client.post(
+            "/api/control/offer",
+            data=b'{"room_id":',
+            headers={"Content-Type": "application/json"},
+        )
+        bad_json_payload = await bad_json_response.json()
+
+        invalid_body_response = await self.client.post("/api/control/offer", json=123)
+        invalid_body_payload = await invalid_body_response.json()
+
+        missing_field_response = await self.client.post(
+            "/api/control/offer",
+            json={"room_id": "living-room", "player_id": "alice"},
+        )
+        missing_field_payload = await missing_field_response.json()
+
+        self.assertEqual(bad_json_response.status, 400)
+        self.assertEqual(bad_json_payload, {"ok": False, "reason": "bad_json"})
+        self.assertEqual(invalid_body_response.status, 400)
+        self.assertEqual(invalid_body_payload, {"ok": False, "reason": "invalid_body"})
+        self.assertEqual(missing_field_response.status, 400)
+        self.assertEqual(missing_field_payload, {"ok": False, "reason": "missing_reconnect_token"})
+
+    async def test_control_offer_options_and_error_responses_include_cors_headers(self) -> None:
+        options_response = await self.client.options("/api/control/offer")
+        error_response = await self.client.post(
+            "/api/control/offer",
+            json={"room_id": "living-room", "player_id": "alice"},
+        )
+
+        self.assertEqual(options_response.status, 204)
+        self.assertEqual(options_response.headers["Access-Control-Allow-Origin"], "*")
+        self.assertIn("POST", options_response.headers["Access-Control-Allow-Methods"])
+        self.assertIn("OPTIONS", options_response.headers["Access-Control-Allow-Methods"])
+        self.assertEqual(error_response.headers["Access-Control-Allow-Origin"], "*")
 
 
 if __name__ == "__main__":
