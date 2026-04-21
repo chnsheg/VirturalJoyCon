@@ -60,7 +60,7 @@ class ControlPeerFactory:
             self.active_peers.discard(peer)
             return
 
-        if state in {"closed", "disconnected"}:
+        if state == "closed":
             self.active_peers.discard(peer)
 
     async def answer_offer(self, offer_sdp: str, offer_type: str = "offer") -> dict[str, str]:

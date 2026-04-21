@@ -212,6 +212,21 @@ class ControlPeerFactoryLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(factory.active_peers, set())
         self.assertEqual(peer.close_calls, 1)
 
+    async def test_answer_offer_keeps_peer_alive_on_disconnected_state(self) -> None:
+        peer = FakePeer()
+        factory = ControlPeerFactory(
+            peer_factory=lambda: peer,
+            session_description_factory=FakeSessionDescription,
+        )
+
+        await factory.answer_offer("fake-offer", "offer")
+        self.assertEqual(factory.active_peers, {peer})
+
+        await peer.emit_connectionstatechange("disconnected")
+
+        self.assertEqual(factory.active_peers, {peer})
+        self.assertEqual(peer.close_calls, 0)
+
 
 class StreamGatewayApiTests(AioHTTPTestCase):
     async def get_application(self):
