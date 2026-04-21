@@ -5,6 +5,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 import stream_gateway
 from stream_gateway import create_stream_app
+from streaming.control_peer import ControlPeerFactory
 from streaming.room_state import RoomRegistry
 
 
@@ -39,6 +40,86 @@ class RoomRegistrySnapshotTests(unittest.TestCase):
 
         self.assertEqual(snapshot, {"room_id": "missing-room", "players": []})
         self.assertEqual(registry._rooms, {})
+
+
+class FakeChannel:
+    def __init__(
+        self,
+        *,
+        label: str = "joycon.control.v1",
+        ordered: bool = True,
+        max_retransmits=None,
+        max_packet_lifetime=None,
+    ) -> None:
+        self.label = label
+        self.ordered = ordered
+        self.maxRetransmits = max_retransmits
+        self.maxPacketLifeTime = max_packet_lifetime
+        self.handlers: dict[str, object] = {}
+        self.sent_messages: list[str] = []
+        self.close_calls = 0
+
+    def on(self, event_name: str):
+        def register(handler):
+            self.handlers[event_name] = handler
+            return handler
+
+        return register
+
+    def send(self, message: str) -> None:
+        self.sent_messages.append(message)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class ControlPeerFactoryTests(unittest.TestCase):
+    def test_accepts_control_channel_for_ordered_reliable_transport(self) -> None:
+        channel = FakeChannel()
+
+        self.assertTrue(ControlPeerFactory.accepts_control_channel(channel))
+
+    def test_rejects_control_channel_when_unordered(self) -> None:
+        channel = FakeChannel(ordered=False)
+
+        self.assertFalse(ControlPeerFactory.accepts_control_channel(channel))
+
+    def test_rejects_control_channel_when_max_retransmits_is_set(self) -> None:
+        channel = FakeChannel(max_retransmits=0)
+
+        self.assertFalse(ControlPeerFactory.accepts_control_channel(channel))
+
+    def test_rejects_control_channel_when_max_packet_lifetime_is_set(self) -> None:
+        channel = FakeChannel(max_packet_lifetime=1)
+
+        self.assertFalse(ControlPeerFactory.accepts_control_channel(channel))
+
+    def test_rejects_control_channel_with_wrong_label(self) -> None:
+        channel = FakeChannel(label="joycon.input.v1")
+
+        self.assertFalse(ControlPeerFactory.accepts_control_channel(channel))
+
+    def test_configure_control_channel_registers_ping_pong_for_supported_channel(self) -> None:
+        factory = ControlPeerFactory()
+        channel = FakeChannel()
+
+        configured = factory.configure_control_channel(channel)
+
+        self.assertTrue(configured)
+        self.assertEqual(channel.close_calls, 0)
+        self.assertIn("message", channel.handlers)
+        channel.handlers["message"]("ping")
+        self.assertEqual(channel.sent_messages, ["pong"])
+
+    def test_configure_control_channel_closes_unsupported_control_channel(self) -> None:
+        factory = ControlPeerFactory()
+        channel = FakeChannel(max_retransmits=0)
+
+        configured = factory.configure_control_channel(channel)
+
+        self.assertFalse(configured)
+        self.assertEqual(channel.close_calls, 1)
+        self.assertNotIn("message", channel.handlers)
 
 
 class StreamGatewayApiTests(AioHTTPTestCase):
