@@ -13,6 +13,14 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <section class="stream-stage" aria-label="Remote game stream">
+    <video id="remoteVideo" class="remote-video" playsinline autoplay muted></video>
+    <div class="stream-stage-overlay">
+      <div id="roomStatus" class="room-status">not connected</div>
+      <div id="transportMode" class="transport-mode">control: idle</div>
+    </div>
+  </section>
+
   <div class="hud">
     <div class="hud-left">
       <div id="conn">WS: host not set</div>

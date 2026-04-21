@@ -179,6 +179,10 @@ function installAppHarness({
   const hostTargetStatusEl = new MockElement();
   const stickSensitivityInputEl = new MockElement();
   const stickSensitivityValueEl = new MockElement();
+  const remoteVideoEl = new MockElement();
+  remoteVideoEl.play = async () => undefined;
+  const roomStatusEl = new MockElement();
+  const transportModeEl = new MockElement();
   const controllerEl = new MockElement();
   const leftTriggerEl = new MockElement();
   const rightTriggerEl = new MockElement();
@@ -218,6 +222,9 @@ function installAppHarness({
     ["hostTargetStatus", hostTargetStatusEl],
     ["stickSensitivityInput", stickSensitivityInputEl],
     ["stickSensitivityValue", stickSensitivityValueEl],
+    ["remoteVideo", remoteVideoEl],
+    ["roomStatus", roomStatusEl],
+    ["transportMode", transportModeEl],
     ["leftTrigger", leftTriggerEl],
     ["rightTrigger", rightTriggerEl],
     ["leftStick", leftStickEl],
@@ -331,12 +338,31 @@ function installAppHarness({
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     writable: true,
-    value: async (...args) => {
-      fetchCalls.push(args);
+    value: async (url, init = {}) => {
+      fetchCalls.push([url, init]);
+      if (String(url).includes("/api/room/join")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 1,
+              seat_epoch: 1,
+              reconnect_token: "reconnect-fixed",
+            };
+          },
+        };
+      }
+
       return {
         ok: true,
         async json() {
           return {};
+        },
+        async text() {
+          return "v=0\r\n";
         },
       };
     },
@@ -416,6 +442,13 @@ test("styles.css defines the drawer sensitivity hooks", async () => {
   assert.match(css, /\.host-drawer-range-row/);
   assert.match(css, /\.host-drawer-range/);
   assert.match(css, /\.host-drawer-value/);
+});
+
+test("index.html exposes the remote stream stage", async () => {
+  const html = await readFile(resolve(here, "../index.html"), "utf8");
+  assert.match(html, /id="remoteVideo"/);
+  assert.match(html, /id="roomStatus"/);
+  assert.match(html, /id="transportMode"/);
 });
 
 test("startup ignores window.location.host when no host target is saved", async (t) => {

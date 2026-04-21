@@ -16,6 +16,9 @@ import {
   HostDrawerController,
 } from "./host-config.mjs";
 import { computeLayoutMetrics } from "./layout-core.mjs";
+import { getControlHudText, negotiateControlPeer } from "./stream-control.mjs";
+import { subscribeViaWhep } from "./stream-media.mjs";
+import { createInitialStreamState, createRoomSessionClient, roomStatusText } from "./stream-session.mjs";
 
 const connEl = document.getElementById("conn");
 const slotEl = document.getElementById("slot");
@@ -30,6 +33,9 @@ const stickSensitivityInputEl = document.getElementById("stickSensitivityInput")
 const stickSensitivityValueEl = document.getElementById("stickSensitivityValue");
 const hostTargetStatusEl = document.getElementById("hostTargetStatus");
 const controllerEl = document.querySelector(".controller");
+const remoteVideoEl = document.getElementById("remoteVideo");
+const roomStatusEl = document.getElementById("roomStatus");
+const transportModeEl = document.getElementById("transportMode");
 
 window.addEventListener("error", (event) => {
   connEl.textContent = `JS error: ${event.message || "unknown"}`;
@@ -104,6 +110,11 @@ let httpSending = false;
 let httpQueued = false;
 let transportMode = "ws";
 let lastPingSentAt = -Infinity;
+let streamAttempt = 0;
+let activeMediaPeer = null;
+let activeControlPeer = null;
+let controlHudMode = "idle";
+const streamState = createInitialStreamState();
 
 const transmitter = new LatestStateTransmitter({
   getSocket: () => ws,
@@ -125,6 +136,117 @@ function updateSlot(slot, mode = transportMode) {
 
 function clearSlot(mode = transportMode) {
   updateSlot("-", mode);
+}
+
+function renderRoomState() {
+  if (roomStatusEl) {
+    roomStatusEl.textContent = roomStatusText(streamState);
+  }
+
+  if (transportModeEl) {
+    transportModeEl.textContent = getControlHudText(controlHudMode);
+  }
+
+  globalThis.document?.body?.classList?.toggle("stream-degraded", Boolean(streamState.degraded));
+}
+
+function updateStreamDegradedState() {
+  streamState.degraded = streamState.role === "player" && transportMode !== "webrtc";
+  renderRoomState();
+}
+
+function setControlHudMode(mode) {
+  controlHudMode = mode;
+  renderRoomState();
+}
+
+function closeStreamPeer(peer) {
+  try {
+    peer?.close?.();
+  } catch {}
+}
+
+function resetStreamingState() {
+  streamAttempt += 1;
+  closeStreamPeer(activeMediaPeer);
+  closeStreamPeer(activeControlPeer);
+  activeMediaPeer = null;
+  activeControlPeer = null;
+  if (remoteVideoEl) {
+    remoteVideoEl.srcObject = null;
+  }
+  Object.assign(streamState, createInitialStreamState());
+  setControlHudMode("idle");
+}
+
+async function connectMedia(hostTarget) {
+  if (!hostTarget || !remoteVideoEl || typeof RTCPeerConnection !== "function") {
+    return null;
+  }
+
+  return subscribeViaWhep({ hostTarget, videoEl: remoteVideoEl });
+}
+
+async function connectStreaming(hostTarget) {
+  resetStreamingState();
+  const target = String(hostTarget ?? "").trim();
+  if (!target) {
+    return;
+  }
+
+  const currentAttempt = streamAttempt;
+  const roomClient = createRoomSessionClient({ hostTarget: target });
+
+  if (roomStatusEl) {
+    roomStatusEl.textContent = "joining room";
+  }
+
+  try {
+    const joined = await roomClient.join({ playerId: state.client_session_id });
+    if (currentAttempt !== streamAttempt) {
+      return;
+    }
+
+    Object.assign(streamState, joined);
+    updateStreamDegradedState();
+
+    try {
+      activeMediaPeer = await connectMedia(target);
+    } catch {}
+
+    if (joined.role !== "player") {
+      setControlHudMode("idle");
+      return;
+    }
+
+    if (typeof RTCPeerConnection !== "function") {
+      setControlHudMode(transportMode === "http" ? "http" : "ws");
+      return;
+    }
+
+    try {
+      const negotiated = await negotiateControlPeer({
+        hostTarget: target,
+        roomId: joined.roomId,
+        playerId: joined.playerId,
+        reconnectToken: joined.reconnectToken,
+      });
+      if (currentAttempt !== streamAttempt) {
+        closeStreamPeer(negotiated.peer);
+        return;
+      }
+      activeControlPeer = negotiated.peer;
+      setControlHudMode("webrtc");
+    } catch {
+      setControlHudMode(transportMode === "http" ? "http" : "ws");
+    }
+  } catch {
+    if (currentAttempt !== streamAttempt) {
+      return;
+    }
+    Object.assign(streamState, createInitialStreamState(), { lastError: "join failed" });
+    setControlHudMode(transportMode === "http" ? "http" : "idle");
+  }
 }
 
 function updateHostText() {
@@ -423,6 +545,7 @@ async function sendHttpFallback(nowMs) {
   if (!httpUrl) {
     updateConnectionText("WS: host not set");
     clearSlot("idle");
+    updateStreamDegradedState();
     return false;
   }
 
@@ -438,6 +561,7 @@ async function sendHttpFallback(nowMs) {
 
   httpSending = true;
   transportMode = "http";
+  updateStreamDegradedState();
   const requestStartedAt = performance.now();
 
   try {
@@ -488,6 +612,7 @@ function connectWS() {
     transportMode = "ws";
     updateConnectionText("WS: host not set");
     clearSlot("idle");
+    updateStreamDegradedState();
     return;
   }
 
@@ -502,6 +627,7 @@ function connectWS() {
       transportMode = "ws";
       lastPingSentAt = -Infinity;
       updateConnectionText("WS: connected");
+      updateStreamDegradedState();
       markDirty(true);
     });
 
@@ -518,6 +644,7 @@ function connectWS() {
       transportMode = "http";
       updateConnectionText("WS: closed, HTTP fallback active");
       clearSlot("http");
+      updateStreamDegradedState();
       renderLatency(performance.now());
       scheduleReconnect(900);
     });
@@ -526,6 +653,7 @@ function connectWS() {
       transportMode = "http";
       updateConnectionText("WS: error, HTTP fallback active");
       clearSlot("http");
+      updateStreamDegradedState();
       renderLatency(performance.now());
     });
 
@@ -640,11 +768,14 @@ hostTargetFormEl.addEventListener("submit", (event) => {
   renderHostDrawer("saved");
   closeSocketAndReconnectTimer();
   connectWS();
+  void connectStreaming(result.hostTarget);
 });
 
 applyResponsiveLayout();
 updateHostText();
 renderHostDrawer();
+renderRoomState();
 connectWS();
+void connectStreaming(hostDrawerController.hostTarget);
 renderLatency(performance.now());
 window.requestAnimationFrame(transportLoop);
