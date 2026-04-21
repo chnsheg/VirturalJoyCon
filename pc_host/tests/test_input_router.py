@@ -49,6 +49,39 @@ class SeatInputRouterTests(unittest.TestCase):
         self.assertFalse(router.accept(stale))
         self.assertEqual(applied, [(2, first)])
 
+    def test_router_accepts_higher_sequence_in_same_epoch_and_stream(self) -> None:
+        _, SeatInputRouter = _router_exports()
+        applied = []
+        router = SeatInputRouter(lambda *args: applied.append(args))
+
+        first = self.make_packet(seat_index=1, sequence=10)
+        later = self.make_packet(seat_index=1, sequence=11)
+
+        self.assertTrue(router.accept(first))
+        self.assertTrue(router.accept(later))
+        self.assertEqual(applied, [(1, first), (1, later)])
+
+    def test_router_does_not_advance_cursor_when_apply_state_fails(self) -> None:
+        _, SeatInputRouter = _router_exports()
+        applied = []
+        failures_left = 1
+
+        def apply_state(*args):
+            nonlocal failures_left
+            if failures_left:
+                failures_left -= 1
+                raise RuntimeError("temporary apply failure")
+            applied.append(args)
+
+        router = SeatInputRouter(apply_state)
+        packet = self.make_packet(seat_index=1, sequence=10)
+
+        with self.assertRaisesRegex(RuntimeError, "temporary apply failure"):
+            router.accept(packet)
+
+        self.assertTrue(router.accept(packet))
+        self.assertEqual(applied, [(1, packet)])
+
     def test_router_rejects_older_stream_epoch_for_same_seat(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
@@ -61,6 +94,18 @@ class SeatInputRouterTests(unittest.TestCase):
         self.assertFalse(router.accept(older_stream))
         self.assertEqual(applied, [(1, newer_stream)])
 
+    def test_router_accepts_stream_epoch_wraparound_and_resets_sequence_tracking(self) -> None:
+        _, SeatInputRouter = _router_exports()
+        applied = []
+        router = SeatInputRouter(lambda *args: applied.append(args))
+
+        prior = self.make_packet(seat_index=1, stream_epoch=65535, sequence=0xFFFFFFFF)
+        wrapped_stream = self.make_packet(seat_index=1, stream_epoch=0, sequence=0)
+
+        self.assertTrue(router.accept(prior))
+        self.assertTrue(router.accept(wrapped_stream))
+        self.assertEqual(applied, [(1, prior), (1, wrapped_stream)])
+
     def test_router_rejects_older_seat_epoch_for_same_seat(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
@@ -72,6 +117,18 @@ class SeatInputRouterTests(unittest.TestCase):
         self.assertTrue(router.accept(newer_epoch))
         self.assertFalse(router.accept(older_epoch))
         self.assertEqual(applied, [(1, newer_epoch)])
+
+    def test_router_accepts_seat_epoch_wraparound_and_resets_stream_sequence_tracking(self) -> None:
+        _, SeatInputRouter = _router_exports()
+        applied = []
+        router = SeatInputRouter(lambda *args: applied.append(args))
+
+        prior = self.make_packet(seat_index=1, seat_epoch=65535, stream_epoch=65535, sequence=0xFFFFFFFF)
+        wrapped_seat = self.make_packet(seat_index=1, seat_epoch=0, stream_epoch=0, sequence=0)
+
+        self.assertTrue(router.accept(prior))
+        self.assertTrue(router.accept(wrapped_seat))
+        self.assertEqual(applied, [(1, prior), (1, wrapped_seat)])
 
     def test_router_resets_sequence_tracking_when_stream_epoch_advances(self) -> None:
         _, SeatInputRouter = _router_exports()
@@ -96,6 +153,18 @@ class SeatInputRouterTests(unittest.TestCase):
         self.assertTrue(router.accept(prior))
         self.assertTrue(router.accept(newer_seat))
         self.assertEqual(applied, [(1, prior), (1, newer_seat)])
+
+    def test_router_accepts_sequence_wraparound(self) -> None:
+        _, SeatInputRouter = _router_exports()
+        applied = []
+        router = SeatInputRouter(lambda *args: applied.append(args))
+
+        prior = self.make_packet(seat_index=1, sequence=0xFFFFFFFF)
+        wrapped_sequence = self.make_packet(seat_index=1, sequence=0)
+
+        self.assertTrue(router.accept(prior))
+        self.assertTrue(router.accept(wrapped_sequence))
+        self.assertEqual(applied, [(1, prior), (1, wrapped_sequence)])
 
     def test_router_tracks_each_seat_independently(self) -> None:
         _, SeatInputRouter = _router_exports()
