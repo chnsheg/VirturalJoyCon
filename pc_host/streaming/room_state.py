@@ -124,7 +124,11 @@ class RoomRegistry:
         return self._sweep_room(room)
 
     def snapshot(self, room_id: str) -> dict:
-        room = self._room(room_id)
+        room = self._rooms.get(room_id)
+        if room is None:
+            return {"room_id": room_id, "players": []}
+
+        self._sweep_room(room)
         return {
             "room_id": room_id,
             "players": [
