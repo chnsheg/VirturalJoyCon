@@ -61,11 +61,34 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("ddagrab=framerate=60:video_size=1280x720", command)
         self.assertIn("virtual-audio-capturer", command)
         self.assertIn("h264_nvenc", command)
+        self.assertIn("ull", command)
         self.assertIn("opus", command)
         self.assertIn("http://127.0.0.1:8889/game/whip", command)
         self.assertNotIn("desktop", command)
         self.assertNotIn("ddagrab", command)
+        self.assertNotIn("libx264", command)
         self.assertNotEqual(command[1:4], ["-f", "ddagrab", "-framerate"])
+
+    def test_build_ffmpeg_publish_command_supports_software_encoder_fallback(self) -> None:
+        _, build_ffmpeg_publish_command = _media_stack_exports()
+
+        command = build_ffmpeg_publish_command(
+            ffmpeg_exe="ffmpeg.exe",
+            whip_url="http://127.0.0.1:8889/game/whip",
+            width=1280,
+            height=720,
+            fps=60,
+            video_device="desktop",
+            audio_device="virtual-audio-capturer",
+            video_encoder="libx264",
+        )
+
+        self.assertIn("libx264", command)
+        self.assertIn("ultrafast", command)
+        self.assertIn("zerolatency", command)
+        self.assertIn("opus", command)
+        self.assertNotIn("h264_nvenc", command)
+        self.assertNotIn("ull", command)
 
     def test_mediamtx_config_declares_expected_stream_path_and_ports(self) -> None:
         config_path = PROJECT_ROOT / "config" / "mediamtx.yml"
@@ -97,8 +120,11 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("mediamtx.yml", media_stack_script.read_text(encoding="utf-8"))
 
         publisher_text = publisher_script.read_text(encoding="utf-8")
+        self.assertIn('[string]$VideoEncoder = "h264_nvenc"', publisher_text)
+        self.assertIn("libx264", publisher_text)
         self.assertIn("h264_nvenc", publisher_text)
         self.assertIn("-tune ull", publisher_text)
+        self.assertIn("zerolatency", publisher_text)
         self.assertIn("-f lavfi", publisher_text)
         self.assertIn("ddagrab=", publisher_text)
         self.assertNotIn("-f ddagrab", publisher_text)
@@ -119,6 +145,11 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("webrtcAdditionalHosts", readme_text)
         self.assertIn("192.168.0.119", readme_text)
         self.assertIn("remote browser", readme_text)
+        self.assertIn("NVIDIA NVENC", readme_text)
+        self.assertIn("-VideoEncoder libx264", readme_text)
+        self.assertIn("http://192.168.0.119:8889/game/whep", readme_text)
+        self.assertIn("WHEP", readme_text)
+        self.assertIn("subscribe", readme_text)
         self.assertIn("python stream_gateway.py --host 0.0.0.0 --port 8082", readme_text)
         self.assertIn(".\\scripts\\start_media_stack.ps1", readme_text)
         self.assertIn(".\\scripts\\start_stream_publisher.ps1", readme_text)

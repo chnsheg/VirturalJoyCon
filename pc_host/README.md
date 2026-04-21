@@ -61,9 +61,26 @@ Run inside `pc_host`:
 .\scripts\start_stream_publisher.ps1
 ```
 
+The default publisher path assumes an NVIDIA GPU with NVENC and uses `h264_nvenc` for the lowest-latency path.
+If NVENC is unavailable, use the software fallback without editing the script:
+
+```powershell
+.\scripts\start_stream_publisher.ps1 -VideoEncoder libx264
+```
+
+The `libx264` fallback keeps the low-latency design with `-preset ultrafast -tune zerolatency`, but it will use more CPU than the NVIDIA NVENC path.
+
 ### 6. Host the frontend and connect
 
 Host `pc_host\web` with any static HTTP server, then connect the page to `LAN_IP:8082`.
+
+For media playback, the browser or other client should subscribe to the WHEP endpoint on MediaMTX:
+
+```text
+http://192.168.0.119:8889/game/whep
+```
+
+Replace `192.168.0.119` with this host's reachable LAN IP. If your client does not subscribe to `http://<LAN_IP>:8889/game/whep`, it will not receive the published stream even if the WHIP publisher is running.
 
 ## Standalone web controller quick start
 

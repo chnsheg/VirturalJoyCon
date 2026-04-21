@@ -21,9 +21,17 @@ def build_ffmpeg_publish_command(
     fps: int,
     video_device: str,
     audio_device: str,
+    video_encoder: str = "h264_nvenc",
 ) -> list[str]:
     video_filter = "ddagrab" if video_device == "desktop" else video_device
     video_source = f"{video_filter}=framerate={fps}:video_size={width}x{height}"
+    if video_encoder == "h264_nvenc":
+        video_codec_args = ["-c:v", "h264_nvenc", "-tune", "ull", "-bf", "0", "-g", "30"]
+    elif video_encoder == "libx264":
+        video_codec_args = ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-bf", "0", "-g", "30"]
+    else:
+        raise ValueError(f"unsupported_video_encoder:{video_encoder}")
+
     return [
         ffmpeg_exe,
         "-f",
@@ -34,14 +42,7 @@ def build_ffmpeg_publish_command(
         "wasapi",
         "-i",
         audio_device,
-        "-c:v",
-        "h264_nvenc",
-        "-tune",
-        "ull",
-        "-bf",
-        "0",
-        "-g",
-        "30",
+        *video_codec_args,
         "-c:a",
         "opus",
         "-f",
