@@ -86,8 +86,8 @@ class RoomRegistry:
         if member is None:
             return
 
-        deadline = None
-        if member.role == "player":
+        deadline = member.disconnect_deadline
+        if member.role == "player" and member.connected:
             deadline = self.now_fn() + self.seat_hold_seconds
         room.members[player_id] = replace(member, connected=False, disconnect_deadline=deadline)
 

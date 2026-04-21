@@ -81,6 +81,22 @@ class RoomStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reconnect_required"):
             registry.join_room("alpha", "player-1")
 
+    def test_mark_disconnected_preserves_original_deadline_for_duplicate_signals(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=4, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        registry.join_room("alpha", "player-1")
+        registry.mark_disconnected("alpha", "player-1")
+        first_deadline = registry._rooms["alpha"].members["player-1"].disconnect_deadline
+
+        clock.advance(5.0)
+        registry.mark_disconnected("alpha", "player-1")
+        second_deadline = registry._rooms["alpha"].members["player-1"].disconnect_deadline
+
+        self.assertEqual(first_deadline, 110.0)
+        self.assertEqual(second_deadline, first_deadline)
+
     def test_expire_reservations_promotes_oldest_spectator(self) -> None:
         RoomRegistry, _, _ = _room_state_exports()
         clock = _Clock(100.0)
