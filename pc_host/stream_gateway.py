@@ -48,6 +48,11 @@ def create_stream_app(
     app[room_registry_key] = room_registry or RoomRegistry()
     app[control_peer_factory_key] = control_peer_factory or ControlPeerFactory()
 
+    async def cleanup_control_peers(app: web.Application) -> None:
+        close_all = getattr(app[control_peer_factory_key], "close_all", None)
+        if callable(close_all):
+            await close_all()
+
     async def handle_join(request: web.Request) -> web.Response:
         try:
             payload = await request.json()
@@ -136,6 +141,7 @@ def create_stream_app(
             web.post("/api/control/offer", handle_control_offer),
         ]
     )
+    app.on_cleanup.append(cleanup_control_peers)
     return app
 
 

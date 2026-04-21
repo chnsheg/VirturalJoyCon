@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 
 class ControlPeerFactory:
     def __init__(
@@ -51,17 +53,30 @@ class ControlPeerFactory:
 
         return RTCSessionDescription(sdp=sdp, type=type)
 
+    async def _close_peer(self, peer) -> None:
+        close = getattr(peer, "close", None)
+        if not callable(close):
+            return
+
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+
     async def _handle_connection_state_change(self, peer) -> None:
         state = getattr(peer, "connectionState", None)
         if state == "failed":
-            close = getattr(peer, "close", None)
-            if callable(close):
-                await close()
+            await self._close_peer(peer)
             self.active_peers.discard(peer)
             return
 
         if state == "closed":
             self.active_peers.discard(peer)
+
+    async def close_all(self) -> None:
+        peers = list(self.active_peers)
+        self.active_peers.clear()
+        for peer in peers:
+            await self._close_peer(peer)
 
     async def answer_offer(self, offer_sdp: str, offer_type: str = "offer") -> dict[str, str]:
         peer = self._create_peer()
@@ -75,12 +90,20 @@ class ControlPeerFactory:
         async def on_connectionstatechange() -> None:
             await self._handle_connection_state_change(peer)
 
-        await peer.setRemoteDescription(
-            self._create_session_description(sdp=offer_sdp, type=offer_type)
-        )
-        answer = await peer.createAnswer()
-        await peer.setLocalDescription(answer)
-        return {
-            "sdp": peer.localDescription.sdp,
-            "type": peer.localDescription.type,
-        }
+        try:
+            await peer.setRemoteDescription(
+                self._create_session_description(sdp=offer_sdp, type=offer_type)
+            )
+            answer = await peer.createAnswer()
+            await peer.setLocalDescription(answer)
+            return {
+                "sdp": peer.localDescription.sdp,
+                "type": peer.localDescription.type,
+            }
+        except Exception:
+            self.active_peers.discard(peer)
+            try:
+                await self._close_peer(peer)
+            except Exception:
+                pass
+            raise

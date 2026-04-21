@@ -12,10 +12,14 @@ from streaming.room_state import RoomRegistry
 class FakeControlPeerFactory:
     def __init__(self) -> None:
         self.calls: list[dict[str, str]] = []
+        self.close_all_calls = 0
 
     async def answer_offer(self, offer_sdp: str, offer_type: str = "offer") -> dict:
         self.calls.append({"offer_sdp": offer_sdp, "offer_type": offer_type})
         return {"sdp": "fake-answer", "type": "answer"}
+
+    async def close_all(self) -> None:
+        self.close_all_calls += 1
 
 
 class StreamGatewayCliTests(unittest.TestCase):
@@ -80,12 +84,19 @@ class FakeSessionDescription:
 
 
 class FakePeer:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        fail_on_set_remote_description: bool = False,
+        fail_on_create_answer: bool = False,
+    ) -> None:
         self.handlers: dict[str, object] = {}
         self.remote_description = None
         self.localDescription = None
         self.connectionState = "new"
         self.close_calls = 0
+        self.fail_on_set_remote_description = fail_on_set_remote_description
+        self.fail_on_create_answer = fail_on_create_answer
 
     def on(self, event_name: str):
         def register(handler):
@@ -95,9 +106,13 @@ class FakePeer:
         return register
 
     async def setRemoteDescription(self, description) -> None:
+        if self.fail_on_set_remote_description:
+            raise RuntimeError("set_remote_description_failed")
         self.remote_description = description
 
     async def createAnswer(self):
+        if self.fail_on_create_answer:
+            raise RuntimeError("create_answer_failed")
         return FakeSessionDescription(sdp="fake-answer", type="answer")
 
     async def setLocalDescription(self, description) -> None:
@@ -226,6 +241,59 @@ class ControlPeerFactoryLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(factory.active_peers, {peer})
         self.assertEqual(peer.close_calls, 0)
+
+    async def test_answer_offer_cleans_up_peer_when_set_remote_description_fails(self) -> None:
+        peer = FakePeer(fail_on_set_remote_description=True)
+        factory = ControlPeerFactory(
+            peer_factory=lambda: peer,
+            session_description_factory=FakeSessionDescription,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "set_remote_description_failed"):
+            await factory.answer_offer("fake-offer", "offer")
+
+        self.assertEqual(factory.active_peers, set())
+        self.assertEqual(peer.close_calls, 1)
+
+    async def test_answer_offer_cleans_up_peer_when_create_answer_fails(self) -> None:
+        peer = FakePeer(fail_on_create_answer=True)
+        factory = ControlPeerFactory(
+            peer_factory=lambda: peer,
+            session_description_factory=FakeSessionDescription,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "create_answer_failed"):
+            await factory.answer_offer("fake-offer", "offer")
+
+        self.assertEqual(factory.active_peers, set())
+        self.assertEqual(peer.close_calls, 1)
+
+    async def test_close_all_closes_and_clears_active_peers(self) -> None:
+        peer_one = FakePeer()
+        peer_two = FakePeer()
+        factory = ControlPeerFactory()
+        factory.active_peers.update({peer_one, peer_two})
+
+        await factory.close_all()
+
+        self.assertEqual(factory.active_peers, set())
+        self.assertEqual(peer_one.close_calls, 1)
+        self.assertEqual(peer_two.close_calls, 1)
+
+
+class StreamGatewayAppLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_app_cleanup_calls_control_peer_factory_close_all(self) -> None:
+        factory = FakeControlPeerFactory()
+        app = create_stream_app(
+            room_registry=RoomRegistry(now_fn=lambda: 100.0),
+            control_peer_factory=factory,
+        )
+
+        app.freeze()
+        await app.startup()
+        await app.cleanup()
+
+        self.assertEqual(factory.close_all_calls, 1)
 
 
 class StreamGatewayApiTests(AioHTTPTestCase):
