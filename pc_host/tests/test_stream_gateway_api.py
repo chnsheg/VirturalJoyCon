@@ -143,6 +143,17 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 400)
         self.assertEqual(payload, {"ok": False, "reason": "invalid_body"})
 
+    async def test_join_rejects_malformed_json_body_with_bad_json_error(self) -> None:
+        response = await self.client.post(
+            "/api/room/join",
+            data=b'{"room_id":',
+            headers={"Content-Type": "application/json"},
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload, {"ok": False, "reason": "bad_json"})
+
     async def test_join_rejects_null_room_or_player_id(self) -> None:
         null_room_response = await self.client.post(
             "/api/room/join",
