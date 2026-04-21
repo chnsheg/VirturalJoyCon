@@ -57,6 +57,17 @@ class RoomStateTests(unittest.TestCase):
         self.assertGreater(reconnected.seat_epoch, joined.seat_epoch)
         self.assertEqual(reconnected.reconnect_token, joined.reconnect_token)
 
+    def test_reconnect_room_rejects_invalid_reconnect_token(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=4, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        registry.join_room("alpha", "player-1")
+        registry.mark_disconnected("alpha", "player-1")
+
+        with self.assertRaisesRegex(ValueError, "bad_reconnect_token"):
+            registry.reconnect_room("alpha", "player-1", "bad-token")
+
     def test_expire_reservations_promotes_oldest_spectator(self) -> None:
         RoomRegistry, _, _ = _room_state_exports()
         clock = _Clock(100.0)
@@ -94,6 +105,31 @@ class RoomStateTests(unittest.TestCase):
         self.assertEqual(stale.role, "spectator")
         self.assertIsNone(stale.seat_index)
         self.assertEqual(stale.seat_epoch, 0)
+
+    def test_disconnected_spectator_can_rejoin_and_be_promoted(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=2, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        registry.join_room("alpha", "player-1")
+        registry.join_room("alpha", "player-2")
+        spectator = registry.join_room("alpha", "spectator-1")
+
+        registry.mark_disconnected("alpha", "spectator-1")
+        rejoined = registry.join_room("alpha", "spectator-1")
+
+        self.assertEqual(rejoined.role, "spectator")
+        self.assertIsNone(rejoined.seat_index)
+
+        registry.mark_disconnected("alpha", "player-1")
+        clock.advance(11.0)
+        promotions = registry.expire_reservations("alpha")
+
+        self.assertEqual(len(promotions), 1)
+        promoted = promotions[0]
+        self.assertEqual(promoted.player_id, spectator.player_id)
+        self.assertEqual(promoted.role, "player")
+        self.assertEqual(promoted.seat_index, 1)
 
 
 if __name__ == "__main__":
