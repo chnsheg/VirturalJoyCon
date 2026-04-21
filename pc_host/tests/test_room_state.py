@@ -32,7 +32,7 @@ class RoomStateTests(unittest.TestCase):
         self.assertEqual([result.room_id for result in results], ["alpha"] * 5)
         self.assertEqual([result.player_id for result in results], [f"player-{index}" for index in range(1, 6)])
         self.assertEqual([result.role for result in results], ["player", "player", "player", "player", "spectator"])
-        self.assertEqual([result.seat_index for result in results], [0, 1, 2, 3, None])
+        self.assertEqual([result.seat_index for result in results], [1, 2, 3, 4, None])
         self.assertEqual([result.seat_epoch for result in results], [1, 1, 1, 1, 0])
         self.assertTrue(all(result.reconnect_token for result in results))
 
@@ -74,7 +74,7 @@ class RoomStateTests(unittest.TestCase):
         promoted = promotions[0]
         self.assertEqual(promoted.player_id, spectator.player_id)
         self.assertEqual(promoted.role, "player")
-        self.assertEqual(promoted.seat_index, 0)
+        self.assertEqual(promoted.seat_index, 1)
         self.assertGreater(promoted.seat_epoch, spectator.seat_epoch)
 
     def test_expired_reservation_does_not_block_join_or_revive_stale_reconnect(self) -> None:
@@ -90,7 +90,7 @@ class RoomStateTests(unittest.TestCase):
         stale = registry.reconnect_room("alpha", "player-1", original.reconnect_token)
 
         self.assertEqual(replacement.role, "player")
-        self.assertEqual(replacement.seat_index, 0)
+        self.assertEqual(replacement.seat_index, 1)
         self.assertEqual(stale.role, "spectator")
         self.assertIsNone(stale.seat_index)
         self.assertEqual(stale.seat_epoch, 0)

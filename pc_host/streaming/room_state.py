@@ -160,7 +160,7 @@ class RoomRegistry:
             for member in room.members.values()
             if member.role == "player" and member.seat_index is not None
         }
-        for seat_index in range(self.max_seats):
+        for seat_index in range(1, self.max_seats + 1):
             if seat_index not in occupied:
                 return seat_index
         return None
