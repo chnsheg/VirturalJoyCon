@@ -23,7 +23,7 @@ export async function subscribeViaWhep({
   hostTarget,
   videoEl,
   fetchImpl = fetch,
-  peerFactory = () => new RTCPeerConnection(),
+  peerFactory = () => new globalThis.RTCPeerConnection(),
 }) {
   const peer = peerFactory();
   peer.addTransceiver("video", { direction: "recvonly" });

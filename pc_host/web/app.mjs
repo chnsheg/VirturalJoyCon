@@ -151,13 +151,32 @@ function renderRoomState() {
 }
 
 function updateStreamDegradedState() {
-  streamState.degraded = streamState.role === "player" && transportMode !== "webrtc";
+  streamState.degraded = streamState.role === "player" && controlHudMode !== "webrtc";
   renderRoomState();
 }
 
 function setControlHudMode(mode) {
   controlHudMode = mode;
-  renderRoomState();
+  updateStreamDegradedState();
+}
+
+function syncControlHudToTransport() {
+  if (streamState.role === "spectator") {
+    setControlHudMode("idle");
+    return;
+  }
+
+  if (transportMode === "http") {
+    setControlHudMode("http");
+    return;
+  }
+
+  if (transportMode === "ws") {
+    setControlHudMode("ws");
+    return;
+  }
+
+  setControlHudMode("idle");
 }
 
 function closeStreamPeer(peer) {
@@ -180,7 +199,7 @@ function resetStreamingState() {
 }
 
 async function connectMedia(hostTarget) {
-  if (!hostTarget || !remoteVideoEl || typeof RTCPeerConnection !== "function") {
+  if (!hostTarget || !remoteVideoEl || typeof globalThis.RTCPeerConnection !== "function") {
     return null;
   }
 
@@ -219,7 +238,7 @@ async function connectStreaming(hostTarget) {
       return;
     }
 
-    if (typeof RTCPeerConnection !== "function") {
+    if (typeof globalThis.RTCPeerConnection !== "function") {
       setControlHudMode(transportMode === "http" ? "http" : "ws");
       return;
     }
@@ -545,7 +564,7 @@ async function sendHttpFallback(nowMs) {
   if (!httpUrl) {
     updateConnectionText("WS: host not set");
     clearSlot("idle");
-    updateStreamDegradedState();
+    setControlHudMode("idle");
     return false;
   }
 
@@ -561,7 +580,7 @@ async function sendHttpFallback(nowMs) {
 
   httpSending = true;
   transportMode = "http";
-  updateStreamDegradedState();
+  syncControlHudToTransport();
   const requestStartedAt = performance.now();
 
   try {
@@ -612,7 +631,7 @@ function connectWS() {
     transportMode = "ws";
     updateConnectionText("WS: host not set");
     clearSlot("idle");
-    updateStreamDegradedState();
+    setControlHudMode("idle");
     return;
   }
 
@@ -627,7 +646,7 @@ function connectWS() {
       transportMode = "ws";
       lastPingSentAt = -Infinity;
       updateConnectionText("WS: connected");
-      updateStreamDegradedState();
+      syncControlHudToTransport();
       markDirty(true);
     });
 
@@ -644,7 +663,7 @@ function connectWS() {
       transportMode = "http";
       updateConnectionText("WS: closed, HTTP fallback active");
       clearSlot("http");
-      updateStreamDegradedState();
+      syncControlHudToTransport();
       renderLatency(performance.now());
       scheduleReconnect(900);
     });
@@ -653,7 +672,7 @@ function connectWS() {
       transportMode = "http";
       updateConnectionText("WS: error, HTTP fallback active");
       clearSlot("http");
-      updateStreamDegradedState();
+      syncControlHudToTransport();
       renderLatency(performance.now());
     });
 

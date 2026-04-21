@@ -61,7 +61,7 @@ export async function negotiateControlPeer({
   playerId,
   reconnectToken,
   fetchImpl = fetch,
-  peerFactory = () => new RTCPeerConnection(),
+  peerFactory = () => new globalThis.RTCPeerConnection(),
 }) {
   const peer = peerFactory();
   const channel = peer.createDataChannel(CONTROL_CHANNEL_LABEL, createControlChannelOptions());

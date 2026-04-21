@@ -154,6 +154,7 @@ function installAppHarness({
   savedHostTarget,
   savedStickSensitivity,
   fakeLocationHost = "example.invalid",
+  enableRtc = false,
 }) {
   const originalGlobals = new Map();
   for (const key of [
@@ -162,6 +163,7 @@ function installAppHarness({
     "navigator",
     "fetch",
     "WebSocket",
+    "RTCPeerConnection",
     "location",
   ]) {
     originalGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -320,6 +322,43 @@ function installAppHarness({
     }
   }
 
+  class FakeRtcPeerConnection {
+    constructor() {
+      this.localDescription = null;
+      this.remoteDescription = null;
+      this.channels = [];
+      this.transceivers = [];
+    }
+
+    addTransceiver(kind, options) {
+      this.transceivers.push({ kind, options });
+    }
+
+    createDataChannel(label, options) {
+      const channel = {
+        label,
+        options,
+        close() {},
+      };
+      this.channels.push(channel);
+      return channel;
+    }
+
+    async createOffer() {
+      return { type: "offer", sdp: "rtc-offer" };
+    }
+
+    async setLocalDescription(description) {
+      this.localDescription = description;
+    }
+
+    async setRemoteDescription(description) {
+      this.remoteDescription = description;
+    }
+
+    close() {}
+  }
+
   Object.defineProperty(globalThis, "document", {
     configurable: true,
     writable: true,
@@ -372,6 +411,11 @@ function installAppHarness({
     writable: true,
     value: HarnessWebSocket,
   });
+  Object.defineProperty(globalThis, "RTCPeerConnection", {
+    configurable: true,
+    writable: true,
+    value: enableRtc ? FakeRtcPeerConnection : undefined,
+  });
   Object.defineProperty(globalThis, "location", {
     configurable: true,
     writable: true,
@@ -388,10 +432,17 @@ function installAppHarness({
     timers,
     webSockets,
     fetchCalls,
+    roomStatusEl,
+    transportModeEl,
     storage: window.localStorage,
     runAnimationFrame(nowMs = 0) {
       const callback = animationFrameCallbacks.shift();
       callback?.(nowMs);
+    },
+    async settle() {
+      for (let index = 0; index < 20; index += 1) {
+        await Promise.resolve();
+      }
     },
     restore() {
       for (const [key, descriptor] of originalGlobals.entries()) {
@@ -543,4 +594,41 @@ test("startup restores saved stick sensitivity and slider changes persist", asyn
 
   assert.equal(harness.storage.getItem("joycon_stick_sensitivity"), "0.9");
   assert.equal(harness.stickSensitivityValueEl.textContent, "90%");
+});
+
+test("rtc control negotiation clears the degraded room label", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-rtc-ready`);
+  await harness.settle();
+
+  assert.deepEqual(
+    {
+      room: harness.roomStatusEl.textContent,
+      hud: harness.transportModeEl.textContent,
+    },
+    {
+      room: "1P",
+      hud: "control: webrtc",
+    },
+  );
+});
+
+test("transport hud follows later http fallback after rtc negotiation", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-rtc-http-fallback`);
+  await harness.settle();
+
+  harness.webSockets[0].serverClose();
+
+  assert.equal(harness.transportModeEl.textContent, "control: http degraded");
 });
