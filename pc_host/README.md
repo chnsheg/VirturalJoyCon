@@ -18,6 +18,14 @@ You also need these non-Python runtime dependencies before the streaming stack w
 - `ffmpeg.exe` available on `PATH` or passed to `.\scripts\start_stream_publisher.ps1`
 - A valid Windows audio capture device for FFmpeg WASAPI input, for example `virtual-audio-capturer`
 
+Before starting MediaMTX, set `webrtcAdditionalHosts` in `config/mediamtx.yml` to this host's reachable LAN IP. Example:
+
+```yaml
+webrtcAdditionalHosts: [192.168.0.119]
+```
+
+If you leave `webrtcAdditionalHosts` unset or empty, a remote browser on the LAN may fail to complete the WebRTC connection even when the page and signaling endpoint are reachable.
+
 ### 2. Open the Windows firewall when needed
 
 Run inside `pc_host` from an elevated PowerShell session:

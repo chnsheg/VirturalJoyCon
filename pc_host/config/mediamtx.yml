@@ -6,6 +6,7 @@ apiAddress: :9997
 webrtc: yes
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: []
 webrtcICEServers2: []
 
 paths:
