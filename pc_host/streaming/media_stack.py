@@ -2,12 +2,14 @@ from __future__ import annotations
 
 
 def build_mediamtx_env(api_port: int = 9997, webrtc_udp_port: int = 8189) -> dict[str, str]:
+    # Keep the planned legacy helper key and the current MediaMTX local UDP key in sync.
     return {
         "MTX_API": "yes",
         "MTX_APIADDRESS": f":{api_port}",
         "MTX_WEBRTC": "yes",
         "MTX_WEBRTCADDRESS": ":8889",
         "MTX_WEBRTCUDPADDRESS": f":{webrtc_udp_port}",
+        "MTX_WEBRTCLOCALUDPADDRESS": f":{webrtc_udp_port}",
     }
 
 

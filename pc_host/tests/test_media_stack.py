@@ -22,14 +22,22 @@ class MediaStackTests(unittest.TestCase):
 
         env = build_mediamtx_env()
 
+        self.assertEqual(env["MTX_API"], "yes")
+        self.assertEqual(env["MTX_APIADDRESS"], ":9997")
+        self.assertEqual(env["MTX_WEBRTC"], "yes")
+        self.assertEqual(env["MTX_WEBRTCADDRESS"], ":8889")
+        self.assertEqual(env["MTX_WEBRTCUDPADDRESS"], ":8189")
+        self.assertEqual(env["MTX_WEBRTCLOCALUDPADDRESS"], ":8189")
+        self.assertEqual(env["MTX_WEBRTCUDPADDRESS"], env["MTX_WEBRTCLOCALUDPADDRESS"])
         self.assertEqual(
-            env,
+            set(env),
             {
-                "MTX_API": "yes",
-                "MTX_APIADDRESS": ":9997",
-                "MTX_WEBRTC": "yes",
-                "MTX_WEBRTCADDRESS": ":8889",
-                "MTX_WEBRTCUDPADDRESS": ":8189",
+                "MTX_API",
+                "MTX_APIADDRESS",
+                "MTX_WEBRTC",
+                "MTX_WEBRTCADDRESS",
+                "MTX_WEBRTCUDPADDRESS",
+                "MTX_WEBRTCLOCALUDPADDRESS",
             },
         )
 
