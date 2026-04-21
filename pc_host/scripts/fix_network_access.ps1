@@ -16,7 +16,8 @@ try {
 
 Write-Host '[2/4] Create firewall rules for JoyCon host...' -ForegroundColor Cyan
 $rules = @(
-    @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort }
+    @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort },
+    @{ Name = "JoyCon-WebRTC-UDP-8189"; Protocol = 'UDP'; Port = 8189 }
 )
 
 if (-not $SkipUdp) {
@@ -48,5 +49,5 @@ Write-Host ''
 if ($SkipUdp) {
     Write-Host "Done. Standalone controller target: <LAN_IP>:$HttpPort" -ForegroundColor Green
 } else {
-    Write-Host "Done. Standalone controller target: <LAN_IP>:$HttpPort (UDP $UdpPort optional)" -ForegroundColor Green
+    Write-Host "Done. Standalone controller target: <LAN_IP>:$HttpPort (UDP $UdpPort optional, WebRTC UDP 8189 open)" -ForegroundColor Green
 }

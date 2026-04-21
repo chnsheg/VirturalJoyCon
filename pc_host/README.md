@@ -1,5 +1,56 @@
 # LAN Wireless Virtual Gamepad Host (MVP)
 
+## Streaming stack quick start
+
+Use this flow for the shared browser video/audio stream plus WebRTC control gateway. It adds `8082/TCP` for the stream gateway, `8889/TCP` for MediaMTX WebRTC HTTP, and `8189/UDP` for WebRTC media.
+
+### 1. Install dependencies
+
+Run inside `pc_host`:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Open the Windows firewall when needed
+
+Run inside `pc_host` from an elevated PowerShell session:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\fix_network_access.ps1 -HttpPort 8082 -SkipUdp
+```
+
+The helper keeps the standalone TCP rule behavior and also opens `8189/UDP` for WebRTC.
+
+### 3. Start the control gateway
+
+Run inside `pc_host`:
+
+```bash
+python stream_gateway.py --host 0.0.0.0 --port 8082
+```
+
+### 4. Start MediaMTX
+
+Run inside `pc_host`:
+
+```powershell
+.\scripts\start_media_stack.ps1
+```
+
+### 5. Start the Windows publisher
+
+Run inside `pc_host`:
+
+```powershell
+.\scripts\start_stream_publisher.ps1
+```
+
+### 6. Host the frontend and connect
+
+Host `pc_host\web` with any static HTTP server, then connect the page to `LAN_IP:8082`.
+
 ## Standalone web controller quick start
 
 ### 1. Requirements

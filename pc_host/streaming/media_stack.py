@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+
+def build_mediamtx_env(api_port: int = 9997, webrtc_port: int = 8889, webrtc_udp_port: int = 8189) -> dict[str, str]:
+    return {
+        "MTX_API": "yes",
+        "MTX_APIADDRESS": f":{api_port}",
+        "MTX_WEBRTC": "yes",
+        "MTX_WEBRTCADDRESS": f":{webrtc_port}",
+        "MTX_WEBRTCLOCALUDPADDRESS": f":{webrtc_udp_port}",
+    }
+
+
+def build_ffmpeg_publish_command(
+    ffmpeg_exe: str,
+    whip_url: str,
+    width: int,
+    height: int,
+    fps: int,
+    video_device: str,
+    audio_device: str,
+) -> list[str]:
+    return [
+        ffmpeg_exe,
+        "-f",
+        "ddagrab",
+        "-framerate",
+        str(fps),
+        "-video_size",
+        f"{width}x{height}",
+        "-i",
+        video_device,
+        "-f",
+        "wasapi",
+        "-i",
+        audio_device,
+        "-c:v",
+        "h264_nvenc",
+        "-tune",
+        "ull",
+        "-bf",
+        "0",
+        "-g",
+        "30",
+        "-c:a",
+        "opus",
+        "-f",
+        "whip",
+        whip_url,
+    ]
