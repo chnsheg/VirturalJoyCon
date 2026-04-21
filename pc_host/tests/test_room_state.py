@@ -68,6 +68,19 @@ class RoomStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bad_reconnect_token"):
             registry.reconnect_room("alpha", "player-1", "bad-token")
 
+    def test_join_room_rejects_existing_player_without_reconnect(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=4, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        registry.join_room("alpha", "player-1")
+        with self.assertRaisesRegex(ValueError, "reconnect_required"):
+            registry.join_room("alpha", "player-1")
+
+        registry.mark_disconnected("alpha", "player-1")
+        with self.assertRaisesRegex(ValueError, "reconnect_required"):
+            registry.join_room("alpha", "player-1")
+
     def test_expire_reservations_promotes_oldest_spectator(self) -> None:
         RoomRegistry, _, _ = _room_state_exports()
         clock = _Clock(100.0)
@@ -105,6 +118,25 @@ class RoomStateTests(unittest.TestCase):
         self.assertEqual(stale.role, "spectator")
         self.assertIsNone(stale.seat_index)
         self.assertEqual(stale.seat_epoch, 0)
+
+    def test_join_room_does_not_silently_promote_waiting_spectator_after_implicit_cleanup(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=2, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        registry.join_room("alpha", "player-1")
+        registry.join_room("alpha", "player-2")
+        waiting = registry.join_room("alpha", "spectator-1")
+        registry.mark_disconnected("alpha", "player-1")
+        clock.advance(11.0)
+
+        newcomer = registry.join_room("alpha", "player-3")
+
+        self.assertEqual(newcomer.role, "player")
+        self.assertEqual(newcomer.seat_index, 1)
+        room = registry._rooms["alpha"]
+        self.assertEqual(room.members["spectator-1"].role, waiting.role)
+        self.assertIsNone(room.members["spectator-1"].seat_index)
 
     def test_disconnected_spectator_can_rejoin_and_be_promoted(self) -> None:
         RoomRegistry, _, _ = _room_state_exports()

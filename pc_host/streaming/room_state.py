@@ -48,10 +48,12 @@ class RoomRegistry:
 
     def join_room(self, room_id: str, player_id: str) -> JoinResult:
         room = self._room(room_id)
-        self._sweep_room(room)
+        self._delete_expired_player_reservations(room)
 
         current = room.members.get(player_id)
         if current is not None:
+            if current.role == "player":
+                raise ValueError("reconnect_required")
             if not current.connected:
                 current = replace(current, connected=True, disconnect_deadline=None)
                 room.members[player_id] = current
@@ -91,16 +93,18 @@ class RoomRegistry:
 
     def reconnect_room(self, room_id: str, player_id: str, reconnect_token: str) -> JoinResult:
         room = self._room(room_id)
-        self._sweep_room(room)
+        self._delete_expired_player_reservations(room)
 
         member = room.members.get(player_id)
         if member is None:
             return self.join_room(room_id, player_id)
 
+        if member.role == "player" and member.reconnect_token != reconnect_token:
+            raise ValueError("bad_reconnect_token")
+
         if (
             member.role == "player"
             and not member.connected
-            and member.reconnect_token == reconnect_token
         ):
             member = replace(
                 member,
@@ -110,13 +114,6 @@ class RoomRegistry:
             )
             room.members[player_id] = member
             return self._join_result(room_id, member)
-
-        if (
-            member.role == "player"
-            and not member.connected
-            and member.reconnect_token != reconnect_token
-        ):
-            raise ValueError("bad_reconnect_token")
 
         return self._join_result(room_id, member)
 
@@ -132,6 +129,10 @@ class RoomRegistry:
         return self._rooms[room_id]
 
     def _sweep_room(self, room: _Room) -> List[JoinResult]:
+        self._delete_expired_player_reservations(room)
+        return self._promote_spectators(room)
+
+    def _delete_expired_player_reservations(self, room: _Room) -> None:
         now = self.now_fn()
         expired_player_ids = [
             player_id
@@ -144,6 +145,7 @@ class RoomRegistry:
         for player_id in expired_player_ids:
             del room.members[player_id]
 
+    def _promote_spectators(self, room: _Room) -> List[JoinResult]:
         promotions: List[JoinResult] = []
         while True:
             seat_index = self._next_open_seat(room)
