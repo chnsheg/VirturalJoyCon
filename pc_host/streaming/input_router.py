@@ -14,7 +14,7 @@ class _SeatCursor:
 
 
 class SeatInputRouter:
-    def __init__(self, apply_state: Callable[[ControlPacket], None]) -> None:
+    def __init__(self, apply_state: Callable[[int, ControlPacket], None]) -> None:
         self._apply_state = apply_state
         self._seats: dict[int, _SeatCursor] = {}
 
@@ -37,5 +37,5 @@ class SeatInputRouter:
             stream_epoch=packet.stream_epoch,
             sequence=packet.sequence,
         )
-        self._apply_state(packet)
+        self._apply_state(packet.seat_index, packet)
         return True

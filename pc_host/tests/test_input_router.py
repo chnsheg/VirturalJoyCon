@@ -40,74 +40,74 @@ class SeatInputRouterTests(unittest.TestCase):
     def test_router_drops_stale_sequence_for_a_seat(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
-        router = SeatInputRouter(applied.append)
+        router = SeatInputRouter(lambda *args: applied.append(args))
 
         first = self.make_packet(seat_index=2, sequence=10)
         stale = self.make_packet(seat_index=2, sequence=9)
 
         self.assertTrue(router.accept(first))
         self.assertFalse(router.accept(stale))
-        self.assertEqual(applied, [first])
+        self.assertEqual(applied, [(2, first)])
 
     def test_router_rejects_older_stream_epoch_for_same_seat(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
-        router = SeatInputRouter(applied.append)
+        router = SeatInputRouter(lambda *args: applied.append(args))
 
         newer_stream = self.make_packet(seat_index=1, stream_epoch=5, sequence=2)
         older_stream = self.make_packet(seat_index=1, stream_epoch=4, sequence=99)
 
         self.assertTrue(router.accept(newer_stream))
         self.assertFalse(router.accept(older_stream))
-        self.assertEqual(applied, [newer_stream])
+        self.assertEqual(applied, [(1, newer_stream)])
 
     def test_router_rejects_older_seat_epoch_for_same_seat(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
-        router = SeatInputRouter(applied.append)
+        router = SeatInputRouter(lambda *args: applied.append(args))
 
         newer_epoch = self.make_packet(seat_index=1, seat_epoch=3, stream_epoch=1, sequence=1)
         older_epoch = self.make_packet(seat_index=1, seat_epoch=2, stream_epoch=99, sequence=99)
 
         self.assertTrue(router.accept(newer_epoch))
         self.assertFalse(router.accept(older_epoch))
-        self.assertEqual(applied, [newer_epoch])
+        self.assertEqual(applied, [(1, newer_epoch)])
 
     def test_router_resets_sequence_tracking_when_stream_epoch_advances(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
-        router = SeatInputRouter(applied.append)
+        router = SeatInputRouter(lambda *args: applied.append(args))
 
         prior = self.make_packet(seat_index=1, stream_epoch=1, sequence=9)
         newer_stream = self.make_packet(seat_index=1, stream_epoch=2, sequence=1)
 
         self.assertTrue(router.accept(prior))
         self.assertTrue(router.accept(newer_stream))
-        self.assertEqual(applied, [prior, newer_stream])
+        self.assertEqual(applied, [(1, prior), (1, newer_stream)])
 
     def test_router_resets_stream_and_sequence_tracking_when_seat_epoch_advances(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
-        router = SeatInputRouter(applied.append)
+        router = SeatInputRouter(lambda *args: applied.append(args))
 
         prior = self.make_packet(seat_index=1, seat_epoch=1, stream_epoch=7, sequence=12)
         newer_seat = self.make_packet(seat_index=1, seat_epoch=2, stream_epoch=1, sequence=1)
 
         self.assertTrue(router.accept(prior))
         self.assertTrue(router.accept(newer_seat))
-        self.assertEqual(applied, [prior, newer_seat])
+        self.assertEqual(applied, [(1, prior), (1, newer_seat)])
 
     def test_router_tracks_each_seat_independently(self) -> None:
         _, SeatInputRouter = _router_exports()
         applied = []
-        router = SeatInputRouter(applied.append)
+        router = SeatInputRouter(lambda *args: applied.append(args))
 
         seat_one = self.make_packet(seat_index=1, sequence=5)
         seat_two = self.make_packet(seat_index=2, sequence=1)
 
         self.assertTrue(router.accept(seat_one))
         self.assertTrue(router.accept(seat_two))
-        self.assertEqual(applied, [seat_one, seat_two])
+        self.assertEqual(applied, [(1, seat_one), (2, seat_two)])
 
 
 if __name__ == "__main__":

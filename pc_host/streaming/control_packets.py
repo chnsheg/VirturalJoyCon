@@ -4,7 +4,7 @@ import struct
 from dataclasses import dataclass
 
 
-_PACKET_STRUCT = struct.Struct("<QQBIIIQIhhhhBB")
+PACKET_STRUCT = struct.Struct("<QQBHHIQIhhhhHH")
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class ControlPacket:
 
 
 def encode_packet(packet: ControlPacket) -> bytes:
-    return _PACKET_STRUCT.pack(
+    return PACKET_STRUCT.pack(
         packet.room_id_hash,
         packet.player_id_hash,
         packet.seat_index,
@@ -45,4 +45,4 @@ def encode_packet(packet: ControlPacket) -> bytes:
 
 
 def decode_packet(data: bytes) -> ControlPacket:
-    return ControlPacket(*_PACKET_STRUCT.unpack(data))
+    return ControlPacket(*PACKET_STRUCT.unpack(data))
