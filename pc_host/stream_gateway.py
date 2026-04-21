@@ -1,4 +1,5 @@
 import argparse
+from collections.abc import Mapping
 
 from aiohttp import web
 
@@ -22,11 +23,15 @@ def cors_json_response(payload: dict, status: int = 200) -> web.Response:
     return add_cors_headers(web.json_response(payload, status=status))
 
 
-def _read_required_text(mapping: dict, field_name: str) -> str:
+def _read_required_text(mapping: Mapping[str, object], field_name: str) -> str:
     if field_name not in mapping:
         raise ValueError(f"missing_{field_name}")
 
-    value = str(mapping[field_name]).strip()
+    value = mapping[field_name]
+    if not isinstance(value, str):
+        raise ValueError(f"invalid_{field_name}")
+
+    value = value.strip()
     if not value:
         raise ValueError(f"blank_{field_name}")
     return value
@@ -42,6 +47,9 @@ def create_stream_app(room_registry: RoomRegistry | None = None) -> web.Applicat
             payload = await request.json()
         except Exception:
             return cors_json_response({"ok": False, "reason": "bad_json"}, status=400)
+
+        if not isinstance(payload, Mapping):
+            return cors_json_response({"ok": False, "reason": "invalid_body"}, status=400)
 
         try:
             room_id = _read_required_text(payload, "room_id")

@@ -136,6 +136,30 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(blank_response.status, 400)
         self.assertEqual(blank_payload, {"ok": False, "reason": "blank_player_id"})
 
+    async def test_join_rejects_scalar_json_body_with_json_error(self) -> None:
+        response = await self.client.post("/api/room/join", json=123)
+        payload = await response.json()
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload, {"ok": False, "reason": "invalid_body"})
+
+    async def test_join_rejects_null_room_or_player_id(self) -> None:
+        null_room_response = await self.client.post(
+            "/api/room/join",
+            json={"room_id": None, "player_id": "alice"},
+        )
+        null_room_payload = await null_room_response.json()
+        null_player_response = await self.client.post(
+            "/api/room/join",
+            json={"room_id": "living-room", "player_id": None},
+        )
+        null_player_payload = await null_player_response.json()
+
+        self.assertEqual(null_room_response.status, 400)
+        self.assertEqual(null_room_payload, {"ok": False, "reason": "invalid_room_id"})
+        self.assertEqual(null_player_response.status, 400)
+        self.assertEqual(null_player_payload, {"ok": False, "reason": "invalid_player_id"})
+
     async def test_status_requires_room_id_query_parameter(self) -> None:
         response = await self.client.get("/api/room/status")
         payload = await response.json()
