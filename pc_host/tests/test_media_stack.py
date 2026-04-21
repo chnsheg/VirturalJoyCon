@@ -1,4 +1,5 @@
 import unittest
+from inspect import signature
 from pathlib import Path
 
 
@@ -14,8 +15,10 @@ def _media_stack_exports():
 
 
 class MediaStackTests(unittest.TestCase):
-    def test_build_mediamtx_env_exposes_api_and_webrtc_ports(self) -> None:
+    def test_build_mediamtx_env_matches_planned_helper_contract(self) -> None:
         build_mediamtx_env, _ = _media_stack_exports()
+
+        self.assertEqual(list(signature(build_mediamtx_env).parameters), ["api_port", "webrtc_udp_port"])
 
         env = build_mediamtx_env()
 
@@ -26,7 +29,7 @@ class MediaStackTests(unittest.TestCase):
                 "MTX_APIADDRESS": ":9997",
                 "MTX_WEBRTC": "yes",
                 "MTX_WEBRTCADDRESS": ":8889",
-                "MTX_WEBRTCLOCALUDPADDRESS": ":8189",
+                "MTX_WEBRTCUDPADDRESS": ":8189",
             },
         )
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 
-def build_mediamtx_env(api_port: int = 9997, webrtc_port: int = 8889, webrtc_udp_port: int = 8189) -> dict[str, str]:
+def build_mediamtx_env(api_port: int = 9997, webrtc_udp_port: int = 8189) -> dict[str, str]:
     return {
         "MTX_API": "yes",
         "MTX_APIADDRESS": f":{api_port}",
         "MTX_WEBRTC": "yes",
-        "MTX_WEBRTCADDRESS": f":{webrtc_port}",
-        "MTX_WEBRTCLOCALUDPADDRESS": f":{webrtc_udp_port}",
+        "MTX_WEBRTCADDRESS": ":8889",
+        "MTX_WEBRTCUDPADDRESS": f":{webrtc_udp_port}",
     }
 
 
