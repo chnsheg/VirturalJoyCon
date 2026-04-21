@@ -1,9 +1,28 @@
 import unittest
+from unittest.mock import patch
 
 from aiohttp.test_utils import AioHTTPTestCase
 
+import stream_gateway
 from stream_gateway import create_stream_app
 from streaming.room_state import RoomRegistry
+
+
+class StreamGatewayCliTests(unittest.TestCase):
+    def test_main_runs_gateway_with_cli_host_and_port(self) -> None:
+        app = object()
+
+        with (
+            patch.object(stream_gateway, "create_stream_app", return_value=app),
+            patch.object(stream_gateway.web, "run_app") as run_app,
+            patch("sys.argv", ["stream_gateway.py", "--host", "127.0.0.1", "--port", "9090"]),
+        ):
+            stream_gateway.main()
+
+        run_app.assert_called_once_with(app, host="127.0.0.1", port=9090)
+
+    def test_module_does_not_expose_room_registry_key(self) -> None:
+        self.assertFalse(hasattr(stream_gateway, "ROOM_REGISTRY_KEY"))
 
 
 class StreamGatewayApiTests(AioHTTPTestCase):
