@@ -10,6 +10,7 @@ class RoomMember:
     room_id: str
     member_id: str
     seat: Optional[int]
+    seat_epoch: int
     connected: bool
     joined_at: float
     reservation_expires_at: Optional[float] = None
@@ -49,9 +50,12 @@ class RoomRegistry:
             room_id=room_id,
             member_id=member_id,
             seat=self._next_open_seat(room),
+            seat_epoch=0,
             connected=True,
             joined_at=self._now(now),
         )
+        if member.seat is not None:
+            member = replace(member, seat_epoch=1)
         room.members[member_id] = member
         return JoinResult(member=member)
 
@@ -79,7 +83,12 @@ class RoomRegistry:
             self._promote_spectators(room)
             return self.join_room(room_id, member_id, now=now)
 
-        reconnected = replace(member, connected=True, reservation_expires_at=None)
+        reconnected = replace(
+            member,
+            seat_epoch=member.seat_epoch + 1 if member.seat is not None else member.seat_epoch,
+            connected=True,
+            reservation_expires_at=None,
+        )
         room.members[member_id] = reconnected
         return JoinResult(member=reconnected, reconnected=True)
 
@@ -123,7 +132,11 @@ class RoomRegistry:
                 return
 
             spectator = spectators[0]
-            room.members[spectator.member_id] = replace(spectator, seat=seat)
+            room.members[spectator.member_id] = replace(
+                spectator,
+                seat=seat,
+                seat_epoch=spectator.seat_epoch + 1,
+            )
 
     def _now(self, now: Optional[float]) -> float:
         if now is None:

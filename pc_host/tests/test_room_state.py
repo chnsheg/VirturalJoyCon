@@ -36,6 +36,7 @@ class RoomStateTests(unittest.TestCase):
         self.assertTrue(reconnected.reconnected)
         self.assertEqual(reconnected.member.member_id, "phone-1")
         self.assertEqual(reconnected.member.seat, joined.member.seat)
+        self.assertGreater(reconnected.member.seat_epoch, joined.member.seat_epoch)
         self.assertFalse(reconnected.member.is_spectator)
         self.assertTrue(reconnected.member.connected)
 
