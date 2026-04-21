@@ -73,6 +73,49 @@ class FakeChannel:
         self.close_calls += 1
 
 
+class FakeSessionDescription:
+    def __init__(self, *, sdp: str, type: str) -> None:
+        self.sdp = sdp
+        self.type = type
+
+
+class FakePeer:
+    def __init__(self) -> None:
+        self.handlers: dict[str, object] = {}
+        self.remote_description = None
+        self.localDescription = None
+        self.connectionState = "new"
+        self.close_calls = 0
+
+    def on(self, event_name: str):
+        def register(handler):
+            self.handlers[event_name] = handler
+            return handler
+
+        return register
+
+    async def setRemoteDescription(self, description) -> None:
+        self.remote_description = description
+
+    async def createAnswer(self):
+        return FakeSessionDescription(sdp="fake-answer", type="answer")
+
+    async def setLocalDescription(self, description) -> None:
+        self.localDescription = description
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.connectionState = "closed"
+
+    async def emit_connectionstatechange(self, state: str) -> None:
+        self.connectionState = state
+        handler = self.handlers.get("connectionstatechange")
+        if handler is not None:
+            result = handler()
+            if result is not None:
+                await result
+
+
 class ControlPeerFactoryTests(unittest.TestCase):
     def test_accepts_control_channel_for_ordered_reliable_transport(self) -> None:
         channel = FakeChannel()
@@ -120,6 +163,54 @@ class ControlPeerFactoryTests(unittest.TestCase):
         self.assertFalse(configured)
         self.assertEqual(channel.close_calls, 1)
         self.assertNotIn("message", channel.handlers)
+
+
+class ControlPeerFactoryLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_answer_offer_keeps_peer_alive_and_returns_answer(self) -> None:
+        created_peers: list[FakePeer] = []
+
+        def create_peer() -> FakePeer:
+            peer = FakePeer()
+            created_peers.append(peer)
+            return peer
+
+        factory = ControlPeerFactory(
+            peer_factory=create_peer,
+            session_description_factory=FakeSessionDescription,
+        )
+
+        answer = await factory.answer_offer("fake-offer", "offer")
+
+        self.assertEqual(answer, {"sdp": "fake-answer", "type": "answer"})
+        self.assertEqual(len(created_peers), 1)
+        self.assertEqual(factory.active_peers, {created_peers[0]})
+        self.assertEqual(created_peers[0].remote_description.sdp, "fake-offer")
+        self.assertEqual(created_peers[0].remote_description.type, "offer")
+
+    async def test_answer_offer_cleans_up_peer_on_closed_state(self) -> None:
+        peer = FakePeer()
+        factory = ControlPeerFactory(
+            peer_factory=lambda: peer,
+            session_description_factory=FakeSessionDescription,
+        )
+
+        await factory.answer_offer("fake-offer", "offer")
+        await peer.emit_connectionstatechange("closed")
+
+        self.assertEqual(factory.active_peers, set())
+
+    async def test_answer_offer_cleans_up_peer_on_failed_state(self) -> None:
+        peer = FakePeer()
+        factory = ControlPeerFactory(
+            peer_factory=lambda: peer,
+            session_description_factory=FakeSessionDescription,
+        )
+
+        await factory.answer_offer("fake-offer", "offer")
+        await peer.emit_connectionstatechange("failed")
+
+        self.assertEqual(factory.active_peers, set())
+        self.assertEqual(peer.close_calls, 1)
 
 
 class StreamGatewayApiTests(AioHTTPTestCase):
