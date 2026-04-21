@@ -1,61 +1,99 @@
 import unittest
 
 
-def _room_registry_class():
+def _room_state_exports():
     try:
-        from streaming.room_state import RoomRegistry
+        from streaming.room_state import JoinResult, RoomMember, RoomRegistry
     except ModuleNotFoundError as exc:
-        raise AssertionError("streaming.room_state.RoomRegistry is not implemented") from exc
-    return RoomRegistry
+        raise AssertionError("streaming.room_state exports are not implemented") from exc
+    return RoomRegistry, JoinResult, RoomMember
+
+
+class _Clock:
+    def __init__(self, start: float) -> None:
+        self.value = start
+
+    def now(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
 
 
 class RoomStateTests(unittest.TestCase):
-    def test_join_room_assigns_player_seats_before_spectators(self) -> None:
-        RoomRegistry = _room_registry_class()
+    def test_join_room_assigns_seats_then_spectator_role(self) -> None:
+        RoomRegistry, JoinResult, RoomMember = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=4, now_fn=clock.now)
 
-        registry = RoomRegistry(max_players=4)
+        results = [registry.join_room("alpha", f"player-{index}") for index in range(1, 6)]
 
-        results = [
-            registry.join_room("alpha", f"member-{index}", now=100.0)
-            for index in range(1, 6)
-        ]
+        self.assertTrue(all(isinstance(result, JoinResult) for result in results))
+        self.assertEqual([result.room_id for result in results], ["alpha"] * 5)
+        self.assertEqual([result.player_id for result in results], [f"player-{index}" for index in range(1, 6)])
+        self.assertEqual([result.role for result in results], ["player", "player", "player", "player", "spectator"])
+        self.assertEqual([result.seat_index for result in results], [0, 1, 2, 3, None])
+        self.assertEqual([result.seat_epoch for result in results], [1, 1, 1, 1, 0])
+        self.assertTrue(all(result.reconnect_token for result in results))
 
-        self.assertEqual([result.member.seat for result in results], [1, 2, 3, 4, None])
-        self.assertEqual([result.member.is_spectator for result in results], [False, False, False, False, True])
-        self.assertFalse(any(result.reconnected for result in results))
+        room = registry._rooms["alpha"]
+        self.assertTrue(all(isinstance(member, RoomMember) for member in room.members.values()))
 
-    def test_reconnect_room_restores_reserved_player_seat(self) -> None:
-        RoomRegistry = _room_registry_class()
+    def test_reconnect_room_restores_same_seat_with_higher_epoch(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=4, seat_hold_seconds=10.0, now_fn=clock.now)
 
-        registry = RoomRegistry(max_players=4, reservation_ttl=10.0)
-        joined = registry.join_room("alpha", "phone-1", now=100.0)
+        joined = registry.join_room("alpha", "player-1")
+        registry.mark_disconnected("alpha", "player-1")
+        clock.advance(5.0)
 
-        registry.mark_disconnected("alpha", "phone-1", now=105.0)
-        reconnected = registry.reconnect_room("alpha", "phone-1", now=109.0)
+        reconnected = registry.reconnect_room("alpha", "player-1", joined.reconnect_token)
 
-        self.assertTrue(reconnected.reconnected)
-        self.assertEqual(reconnected.member.member_id, "phone-1")
-        self.assertEqual(reconnected.member.seat, joined.member.seat)
-        self.assertGreater(reconnected.member.seat_epoch, joined.member.seat_epoch)
-        self.assertFalse(reconnected.member.is_spectator)
-        self.assertTrue(reconnected.member.connected)
+        self.assertEqual(reconnected.room_id, "alpha")
+        self.assertEqual(reconnected.player_id, "player-1")
+        self.assertEqual(reconnected.role, "player")
+        self.assertEqual(reconnected.seat_index, joined.seat_index)
+        self.assertGreater(reconnected.seat_epoch, joined.seat_epoch)
+        self.assertEqual(reconnected.reconnect_token, joined.reconnect_token)
 
-    def test_expire_reservations_promotes_oldest_spectator_to_open_seat(self) -> None:
-        RoomRegistry = _room_registry_class()
+    def test_expire_reservations_promotes_oldest_spectator(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=2, seat_hold_seconds=10.0, now_fn=clock.now)
 
-        registry = RoomRegistry(max_players=2, reservation_ttl=10.0)
-        registry.join_room("alpha", "player-1", now=100.0)
-        registry.join_room("alpha", "player-2", now=101.0)
-        spectator = registry.join_room("alpha", "spectator-1", now=102.0)
-        registry.mark_disconnected("alpha", "player-1", now=103.0)
+        registry.join_room("alpha", "player-1")
+        registry.join_room("alpha", "player-2")
+        spectator = registry.join_room("alpha", "spectator-1")
+        registry.mark_disconnected("alpha", "player-1")
+        clock.advance(11.0)
 
-        registry.expire_reservations(now=114.0)
-        promoted = registry.reconnect_room("alpha", "spectator-1", now=115.0)
+        promotions = registry.expire_reservations("alpha")
 
-        self.assertTrue(spectator.member.is_spectator)
-        self.assertEqual(promoted.member.seat, 1)
-        self.assertFalse(promoted.member.is_spectator)
-        self.assertTrue(promoted.member.connected)
+        self.assertEqual(len(promotions), 1)
+        promoted = promotions[0]
+        self.assertEqual(promoted.player_id, spectator.player_id)
+        self.assertEqual(promoted.role, "player")
+        self.assertEqual(promoted.seat_index, 0)
+        self.assertGreater(promoted.seat_epoch, spectator.seat_epoch)
+
+    def test_expired_reservation_does_not_block_join_or_revive_stale_reconnect(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=1, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        original = registry.join_room("alpha", "player-1")
+        registry.mark_disconnected("alpha", "player-1")
+        clock.advance(11.0)
+
+        replacement = registry.join_room("alpha", "player-2")
+        stale = registry.reconnect_room("alpha", "player-1", original.reconnect_token)
+
+        self.assertEqual(replacement.role, "player")
+        self.assertEqual(replacement.seat_index, 0)
+        self.assertEqual(stale.role, "spectator")
+        self.assertIsNone(stale.seat_index)
+        self.assertEqual(stale.seat_epoch, 0)
 
 
 if __name__ == "__main__":
