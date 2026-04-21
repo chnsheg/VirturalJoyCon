@@ -153,6 +153,7 @@ class MockWebSocket {
 function installAppHarness({
   savedHostTarget,
   savedStickSensitivity,
+  savedReconnectToken,
   fakeLocationHost = "example.invalid",
   enableRtc = false,
   fetchImpl = null,
@@ -323,6 +324,7 @@ function installAppHarness({
     localStorage: createStorage({
       joycon_host_target: savedHostTarget,
       joycon_stick_sensitivity: savedStickSensitivity,
+      joycon_stream_reconnect_token: savedReconnectToken,
     }),
     sessionStorage: createStorage(),
     location,
@@ -617,6 +619,31 @@ test("startup restores saved stick sensitivity and slider changes persist", asyn
   assert.equal(harness.stickSensitivityValueEl.textContent, "90%");
 });
 
+test("startup prefers the reconnect endpoint when a saved token exists", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    savedReconnectToken: "saved-token",
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-prefer-reconnect`);
+  await harness.settle();
+
+  assert.match(String(harness.fetchCalls[0][0]), /\/api\/room\/reconnect$/);
+});
+
+test("successful room negotiation persists the reconnect token", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-persist-reconnect`);
+  await harness.settle();
+
+  assert.equal(harness.storage.getItem("joycon_stream_reconnect_token"), "reconnect-fixed");
+});
+
 test("rtc control negotiation clears the degraded room label", async (t) => {
   const harness = installAppHarness({
     savedHostTarget: "192.168.0.10:8081",
@@ -741,6 +768,22 @@ test("stale media completion does not overwrite a newer host attempt", async (t)
       }
 
       if (String(url).includes("192.168.0.11") && String(url).includes("/api/room/join")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 2,
+              seat_epoch: 2,
+              reconnect_token: "token-2",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("192.168.0.11") && String(url).includes("/api/room/reconnect")) {
         return {
           ok: true,
           async json() {

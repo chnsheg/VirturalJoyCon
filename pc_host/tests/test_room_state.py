@@ -68,6 +68,19 @@ class RoomStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bad_reconnect_token"):
             registry.reconnect_room("alpha", "player-1", "bad-token")
 
+    def test_reconnect_room_refreshes_active_player_epoch(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=4, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        joined = registry.join_room("alpha", "player-1")
+
+        reconnected = registry.reconnect_room("alpha", "player-1", joined.reconnect_token)
+
+        self.assertEqual(reconnected.role, "player")
+        self.assertEqual(reconnected.seat_index, joined.seat_index)
+        self.assertGreater(reconnected.seat_epoch, joined.seat_epoch)
+
     def test_join_room_rejects_existing_player_without_reconnect(self) -> None:
         RoomRegistry, _, _ = _room_state_exports()
         clock = _Clock(100.0)

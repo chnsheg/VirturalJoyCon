@@ -41,6 +41,7 @@ test("roomStatusText labels spectators and degraded players with ASCII text", ()
 test("buildRoomApiUrls derives room endpoints from the host target", () => {
   assert.deepEqual(buildRoomApiUrls("192.168.0.10:8082"), {
     joinUrl: "http://192.168.0.10:8082/api/room/join",
+    reconnectUrl: "http://192.168.0.10:8082/api/room/reconnect",
     statusUrl: "http://192.168.0.10:8082/api/room/status",
     controlOfferUrl: "http://192.168.0.10:8082/api/control/offer",
   });
@@ -85,4 +86,40 @@ test("createRoomSessionClient joins with the default room id and reduces the res
     seatEpoch: 4,
     reconnectToken: "token-1",
   });
+});
+
+test("createRoomSessionClient reconnects with the saved token", async () => {
+  const fetchCalls = [];
+  const client = createRoomSessionClient({
+    hostTarget: "192.168.0.10:8082",
+    fetchImpl: async (url, init) => {
+      fetchCalls.push({ url, init });
+      return {
+        ok: true,
+        async json() {
+          return {
+            room_id: STREAM_ROOM_ID,
+            player_id: "player-1",
+            role: "player",
+            seat_index: 1,
+            seat_epoch: 5,
+            reconnect_token: "token-1",
+          };
+        },
+      };
+    },
+  });
+
+  const reconnected = await client.reconnect({
+    playerId: "player-1",
+    reconnectToken: "token-1",
+  });
+
+  assert.equal(fetchCalls[0].url, "http://192.168.0.10:8082/api/room/reconnect");
+  assert.deepEqual(JSON.parse(fetchCalls[0].init.body), {
+    room_id: STREAM_ROOM_ID,
+    player_id: "player-1",
+    reconnect_token: "token-1",
+  });
+  assert.equal(reconnected.seatEpoch, 5);
 });

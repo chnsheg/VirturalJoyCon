@@ -59,6 +59,7 @@ export function buildRoomApiUrls(hostTarget) {
   const target = normalizeHostTarget(hostTarget);
   return {
     joinUrl: `http://${target}/api/room/join`,
+    reconnectUrl: `http://${target}/api/room/reconnect`,
     statusUrl: `http://${target}/api/room/status`,
     controlOfferUrl: `http://${target}/api/control/offer`,
   };
@@ -81,6 +82,21 @@ export function createRoomSessionClient({
           body: JSON.stringify({
             room_id: roomId,
             player_id: playerId,
+          }),
+        }),
+      );
+
+      return reduceJoinResponse(payload);
+    },
+    async reconnect({ playerId, reconnectToken }) {
+      const payload = await readJsonResponse(
+        await fetchImpl(urls.reconnectUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            room_id: roomId,
+            player_id: playerId,
+            reconnect_token: reconnectToken,
           }),
         }),
       );

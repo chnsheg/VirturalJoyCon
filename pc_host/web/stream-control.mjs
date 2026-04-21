@@ -72,6 +72,18 @@ export function getControlHudText(mode) {
   return "control: idle";
 }
 
+export function computeControlMode({ hasDataChannel, hasWebSocketFallback }) {
+  if (hasDataChannel) {
+    return { label: "webrtc", degraded: false };
+  }
+
+  if (hasWebSocketFallback) {
+    return { label: "ws", degraded: true };
+  }
+
+  return { label: "idle", degraded: true };
+}
+
 export async function negotiateControlPeer({
   hostTarget,
   roomId,

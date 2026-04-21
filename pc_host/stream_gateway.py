@@ -91,6 +91,40 @@ def create_stream_app(
         snapshot = request.app[room_registry_key].snapshot(room_id)
         return cors_json_response(snapshot)
 
+    async def handle_reconnect(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            return cors_json_response({"ok": False, "reason": "bad_json"}, status=400)
+
+        if not isinstance(payload, Mapping):
+            return cors_json_response({"ok": False, "reason": "invalid_body"}, status=400)
+
+        try:
+            room_id = _read_required_text(payload, "room_id")
+            player_id = _read_required_text(payload, "player_id")
+            reconnect_token = _read_required_text(payload, "reconnect_token")
+            reconnected = request.app[room_registry_key].reconnect_room(
+                room_id=room_id,
+                player_id=player_id,
+                reconnect_token=reconnect_token,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            status = 409 if reason == "bad_reconnect_token" else 400
+            return cors_json_response({"ok": False, "reason": reason}, status=status)
+
+        return cors_json_response(
+            {
+                "room_id": reconnected.room_id,
+                "player_id": reconnected.player_id,
+                "role": reconnected.role,
+                "seat_index": reconnected.seat_index,
+                "seat_epoch": reconnected.seat_epoch,
+                "reconnect_token": reconnected.reconnect_token,
+            }
+        )
+
     async def handle_control_offer(request: web.Request) -> web.Response:
         try:
             payload = await request.json()
@@ -135,6 +169,8 @@ def create_stream_app(
         [
             web.options("/api/room/join", handle_options),
             web.post("/api/room/join", handle_join),
+            web.options("/api/room/reconnect", handle_options),
+            web.post("/api/room/reconnect", handle_reconnect),
             web.options("/api/room/status", handle_options),
             web.get("/api/room/status", handle_status),
             web.options("/api/control/offer", handle_options),

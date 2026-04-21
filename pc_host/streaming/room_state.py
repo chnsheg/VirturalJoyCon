@@ -102,10 +102,7 @@ class RoomRegistry:
         if member.role == "player" and member.reconnect_token != reconnect_token:
             raise ValueError("bad_reconnect_token")
 
-        if (
-            member.role == "player"
-            and not member.connected
-        ):
+        if member.role == "player":
             member = replace(
                 member,
                 connected=True,

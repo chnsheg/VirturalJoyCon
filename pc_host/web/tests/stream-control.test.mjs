@@ -6,6 +6,7 @@ import {
   createControlChannelOptions,
   createControlOfferPayload,
   createInputChannelOptions,
+  computeControlMode,
   getControlHudText,
   negotiateControlPeer,
   shouldDropPendingAnalogState,
@@ -113,4 +114,19 @@ test("getControlHudText marks tcp fallback modes as degraded", () => {
   assert.equal(getControlHudText("ws"), "control: websocket degraded");
   assert.equal(getControlHudText("http"), "control: http degraded");
   assert.equal(getControlHudText("webrtc"), "control: webrtc");
+});
+
+test("computeControlMode prefers datachannel and marks fallbacks degraded", () => {
+  assert.deepEqual(
+    computeControlMode({ hasDataChannel: true, hasWebSocketFallback: true }),
+    { label: "webrtc", degraded: false },
+  );
+  assert.deepEqual(
+    computeControlMode({ hasDataChannel: false, hasWebSocketFallback: true }),
+    { label: "ws", degraded: true },
+  );
+  assert.deepEqual(
+    computeControlMode({ hasDataChannel: false, hasWebSocketFallback: false }),
+    { label: "idle", degraded: true },
+  );
 });

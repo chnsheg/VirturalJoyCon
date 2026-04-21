@@ -347,6 +347,28 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(payload["room_id"], "living-room")
         self.assertEqual(payload["players"][0]["seat_index"], 1)
 
+    async def test_reconnect_recovers_the_same_seat(self) -> None:
+        join = await self.client.post(
+            "/api/room/join",
+            json={"room_id": "living-room", "player_id": "alice"},
+        )
+        joined = await join.json()
+
+        response = await self.client.post(
+            "/api/room/reconnect",
+            json={
+                "room_id": "living-room",
+                "player_id": joined["player_id"],
+                "reconnect_token": joined["reconnect_token"],
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["seat_index"], 1)
+        self.assertGreater(payload["seat_epoch"], joined["seat_epoch"])
+        self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+
     async def test_status_returns_empty_snapshot_for_unknown_room(self) -> None:
         response = await self.client.get("/api/room/status?room_id=missing-room")
         payload = await response.json()

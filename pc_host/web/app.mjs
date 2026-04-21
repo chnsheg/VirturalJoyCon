@@ -36,6 +36,7 @@ const controllerEl = document.querySelector(".controller");
 const remoteVideoEl = document.getElementById("remoteVideo");
 const roomStatusEl = document.getElementById("roomStatus");
 const transportModeEl = document.getElementById("transportMode");
+const STREAM_RECONNECT_TOKEN_KEY = "joycon_stream_reconnect_token";
 
 window.addEventListener("error", (event) => {
   connEl.textContent = `JS error: ${event.message || "unknown"}`;
@@ -58,6 +59,24 @@ function getPersistentId(key, storage) {
     storage.setItem(key, created);
   } catch {}
   return created;
+}
+
+function loadReconnectToken(storage) {
+  try {
+    return storage?.getItem?.(STREAM_RECONNECT_TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveReconnectToken(storage, reconnectToken) {
+  try {
+    if (reconnectToken) {
+      storage?.setItem?.(STREAM_RECONNECT_TOKEN_KEY, reconnectToken);
+    } else if (typeof storage?.removeItem === "function") {
+      storage.removeItem(STREAM_RECONNECT_TOKEN_KEY);
+    }
+  } catch {}
 }
 
 const state = {
@@ -223,12 +242,27 @@ async function connectStreaming(hostTarget) {
   }
 
   try {
-    const joined = await roomClient.join({ playerId: state.client_session_id });
+    const savedReconnectToken = loadReconnectToken(window.localStorage);
+    let joined;
+    if (savedReconnectToken) {
+      try {
+        joined = await roomClient.reconnect({
+          playerId: state.client_session_id,
+          reconnectToken: savedReconnectToken,
+        });
+      } catch {
+        joined = await roomClient.join({ playerId: state.client_session_id });
+      }
+    } else {
+      joined = await roomClient.join({ playerId: state.client_session_id });
+    }
+
     if (currentAttempt !== streamAttempt) {
       return;
     }
 
     Object.assign(streamState, joined);
+    saveReconnectToken(window.localStorage, joined.reconnectToken);
     updateStreamDegradedState();
 
     try {
