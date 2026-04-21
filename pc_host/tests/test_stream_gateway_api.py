@@ -369,6 +369,42 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertGreater(payload["seat_epoch"], joined["seat_epoch"])
         self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
 
+    async def test_reconnect_restores_spectator_for_future_promotion(self) -> None:
+        for player_id in ["alice", "bob", "charlie", "dana"]:
+            await self.client.post(
+                "/api/room/join",
+                json={"room_id": "living-room", "player_id": player_id},
+            )
+
+        join = await self.client.post(
+            "/api/room/join",
+            json={"room_id": "living-room", "player_id": "spectator"},
+        )
+        joined = await join.json()
+
+        self.registry.mark_disconnected("living-room", "spectator")
+        reconnect = await self.client.post(
+            "/api/room/reconnect",
+            json={
+                "room_id": "living-room",
+                "player_id": joined["player_id"],
+                "reconnect_token": joined["reconnect_token"],
+            },
+        )
+        reconnect_payload = await reconnect.json()
+
+        self.assertEqual(reconnect.status, 200)
+        self.assertEqual(reconnect_payload["role"], "spectator")
+
+        self.registry.mark_disconnected("living-room", "alice")
+        self.now[0] = 111.0
+        status = await self.client.get("/api/room/status?room_id=living-room")
+        payload = await status.json()
+        players_by_id = {player["player_id"]: player for player in payload["players"]}
+
+        self.assertEqual(players_by_id["spectator"]["role"], "player")
+        self.assertEqual(players_by_id["spectator"]["seat_index"], 1)
+
     async def test_status_returns_empty_snapshot_for_unknown_room(self) -> None:
         response = await self.client.get("/api/room/status?room_id=missing-room")
         payload = await response.json()

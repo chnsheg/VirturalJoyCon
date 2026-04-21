@@ -192,6 +192,28 @@ class RoomStateTests(unittest.TestCase):
         self.assertEqual(promoted.role, "player")
         self.assertEqual(promoted.seat_index, 1)
 
+    def test_reconnect_room_restores_disconnected_spectator_for_future_promotion(self) -> None:
+        RoomRegistry, _, _ = _room_state_exports()
+        clock = _Clock(100.0)
+        registry = RoomRegistry(max_seats=2, seat_hold_seconds=10.0, now_fn=clock.now)
+
+        registry.join_room("alpha", "player-1")
+        registry.join_room("alpha", "player-2")
+        spectator = registry.join_room("alpha", "spectator-1")
+
+        registry.mark_disconnected("alpha", "spectator-1")
+        reconnected = registry.reconnect_room("alpha", "spectator-1", spectator.reconnect_token)
+
+        self.assertEqual(reconnected.role, "spectator")
+        self.assertIsNone(reconnected.seat_index)
+
+        registry.mark_disconnected("alpha", "player-1")
+        clock.advance(11.0)
+        promotions = registry.expire_reservations("alpha")
+
+        self.assertEqual(len(promotions), 1)
+        self.assertEqual(promotions[0].player_id, spectator.player_id)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,7 +99,7 @@ class RoomRegistry:
         if member is None:
             return self.join_room(room_id, player_id)
 
-        if member.role == "player" and member.reconnect_token != reconnect_token:
+        if member.reconnect_token != reconnect_token:
             raise ValueError("bad_reconnect_token")
 
         if member.role == "player":
@@ -109,6 +109,11 @@ class RoomRegistry:
                 disconnect_deadline=None,
                 seat_epoch=member.seat_epoch + 1,
             )
+            room.members[player_id] = member
+            return self._join_result(room_id, member)
+
+        if not member.connected:
+            member = replace(member, connected=True, disconnect_deadline=None)
             room.members[player_id] = member
             return self._join_result(room_id, member)
 
