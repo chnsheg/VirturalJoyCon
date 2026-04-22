@@ -44,13 +44,16 @@ winget install --id Gyan.FFmpeg.Essentials --exact
 
 The startup scripts auto-detect the default winget install directories, so they still work when a fresh `pwsh` session has not picked up a PATH update yet.
 
-Before starting MediaMTX, set `webrtcAdditionalHosts` in `config/mediamtx.yml` to this host's reachable LAN IP. Example:
+For low latency on the same LAN, keep `config/mediamtx.yml` restricted to the physical Wi-Fi interface:
 
 ```yaml
-webrtcAdditionalHosts: [192.168.0.119]
+webrtcIPsFromInterfaces: true
+webrtcIPsFromInterfacesList:
+  - WLAN
+webrtcAdditionalHosts: []
 ```
 
-If you leave `webrtcAdditionalHosts` unset or empty, a remote browser on the LAN may fail to complete the WebRTC connection even when the page and signaling endpoint are reachable.
+Use the WLAN address printed by Windows, for example `192.168.0.119:8082`, in the controller drawer. Do not use tunnel or virtual-adapter addresses such as `10.x`, `172.25.x`, or `169.254.x` for the LAN latency test. If a remote browser is on the same Wi-Fi and MediaMTX logs still show a wrong WebRTC candidate such as `172.25.x.x` or `169.254.x.x`, restart MediaMTX after fixing `config/mediamtx.yml`.
 
 ### 2. Open the Windows firewall when needed
 
