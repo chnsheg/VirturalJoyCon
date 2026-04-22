@@ -4,7 +4,7 @@ param(
     [string]$FfmpegExe = "ffmpeg.exe",
     [Alias("WhipUrl")]
     [string]$PublishUrl = "rtsp://127.0.0.1:8554/game",
-    [ValidateSet("rtsp", "whip")]
+    [ValidateSet("rtsp", "rtsp_udp", "whip")]
     [string]$PublishTransport = "rtsp",
     [int]$Width = 1280,
     [int]$Height = 720,
@@ -275,11 +275,14 @@ function New-VideoInputArgs {
 function New-EncoderArgs {
     param(
         [string]$VideoEncoder,
-        [int]$VideoBitrateKbps
+        [int]$VideoBitrateKbps,
+        [int]$Fps
     )
 
     $videoBitrate = "${VideoBitrateKbps}k"
-    $videoBufferKbps = [Math]::Max(800, [int][Math]::Round($VideoBitrateKbps * 0.2))
+    $safeFps = [Math]::Max(1, [int]$Fps)
+    $twoFrameBufferKbps = ($VideoBitrateKbps * 2.0) / $safeFps
+    $videoBufferKbps = [Math]::Max(100, [int]([Math]::Ceiling($twoFrameBufferKbps / 50.0) * 50))
     $videoBuffer = "${videoBufferKbps}k"
 
     if ($VideoEncoder -eq "h264_nvenc") {
@@ -341,7 +344,10 @@ function New-FfmpegArgumentList {
         -Height $Profile.Height `
         -Fps $Profile.Fps `
         -VideoDevice $VideoDevice
-    $encoderArgs = New-EncoderArgs -VideoEncoder $VideoEncoder -VideoBitrateKbps $Profile.VideoBitrateKbps
+    $encoderArgs = New-EncoderArgs `
+        -VideoEncoder $VideoEncoder `
+        -VideoBitrateKbps $Profile.VideoBitrateKbps `
+        -Fps $Profile.Fps
 
     return @(
         $videoInput.VideoArgs +
@@ -419,8 +425,10 @@ function Stop-PublisherProcess {
 
 # Runtime conventions for the low-latency publisher:
 # NVENC path: -tune ull -rc cbr_ld_hq -zerolatency 1 -rc-lookahead 0 -delay 0
+# VBV path: roughly two frames, for example 6000 kbps at 120 fps -> -bufsize 100k
 # x264 fallback: -pix_fmt yuv420p -preset ultrafast -tune zerolatency
-# Ingest transports: -f rtsp -rtsp_transport udp rtsp://127.0.0.1:8554/game ; -f whip
+# Output timing: -fps_mode:v passthrough -flush_packets 1 -muxdelay 0 -muxpreload 0
+# Ingest transports: RTSP/TCP default (-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/game); RTSP/UDP opt-in (-f rtsp -rtsp_transport udp rtsp://127.0.0.1:8554/game); -f whip
 # Audio/video inputs: -f dshow audio=... ; -an
 
 $resolvedFfmpegExe = Resolve-ExecutablePath -ExecutableName $FfmpegExe -WingetPackagePrefix "Gyan.FFmpeg.Essentials"
@@ -444,20 +452,37 @@ if ($PublishTransport -eq "whip" -and -not $PSBoundParameters.ContainsKey("Publi
     $PublishUrl = "http://127.0.0.1:8889/game/whip"
 }
 
-# RTSP ingest uses: -f rtsp -rtsp_transport udp. WHIP experimental ingest uses: -f whip.
-$script:PublishArgs = if ($PublishTransport -eq "rtsp") {
+$script:LowLatencyOutputArgs = @(
+    "-fps_mode:v",
+    "passthrough",
+    "-flush_packets",
+    "1"
+)
+$script:RtspLowLatencyMuxArgs = @(
+    "-muxdelay",
+    "0",
+    "-muxpreload",
+    "0"
+)
+
+# RTSP ingest uses local TCP by default because local UDP ingest can drop RTP packets under load.
+$script:PublishArgs = if ($PublishTransport -eq "rtsp" -or $PublishTransport -eq "rtsp_udp") {
+    $rtspTransport = if ($PublishTransport -eq "rtsp_udp") { "udp" } else { "tcp" }
     @(
+        $script:LowLatencyOutputArgs +
+        $script:RtspLowLatencyMuxArgs +
         "-f",
         "rtsp",
         "-rtsp_transport",
-        "udp",
-        $PublishUrl
+        $rtspTransport,
+        @($PublishUrl)
     )
 } else {
     @(
+        $script:LowLatencyOutputArgs +
         "-f",
         "whip",
-        $PublishUrl
+        @($PublishUrl)
     )
 }
 

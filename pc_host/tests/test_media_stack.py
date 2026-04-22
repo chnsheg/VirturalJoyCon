@@ -98,8 +98,15 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("p1", command)
         self.assertIn("ull", command)
         self.assertIn("libopus", command)
+        self.assertIn("-fps_mode:v", command)
+        self.assertIn("passthrough", command)
+        self.assertIn("-flush_packets", command)
+        self.assertIn("1", command)
+        self.assertIn("-muxdelay", command)
+        self.assertIn("0", command)
+        self.assertIn("-muxpreload", command)
         self.assertIn("-rtsp_transport", command)
-        self.assertIn("udp", command)
+        self.assertIn("tcp", command)
         self.assertIn("rtsp", command)
         self.assertIn("rtsp://127.0.0.1:8554/game", command)
         self.assertNotIn("whip", command)
@@ -200,13 +207,34 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("8500k", command)
         self.assertIn("-maxrate", command)
         self.assertIn("-bufsize", command)
-        self.assertIn("1700k", command)
+        self.assertIn("300k", command)
         self.assertIn("-zerolatency", command)
         self.assertIn("1", command)
         self.assertIn("-rc-lookahead", command)
         self.assertEqual(command[command.index("-rc-lookahead") + 1], "0")
         self.assertIn("-delay", command)
         self.assertEqual(command[command.index("-delay") + 1], "0")
+        self.assertIn("-fps_mode:v", command)
+        self.assertEqual(command[command.index("-fps_mode:v") + 1], "passthrough")
+
+    def test_build_ffmpeg_publish_command_keeps_rtsp_udp_transport_available(self) -> None:
+        _, build_ffmpeg_publish_command = _media_stack_exports()
+
+        command = build_ffmpeg_publish_command(
+            ffmpeg_exe="ffmpeg.exe",
+            publish_url="rtsp://127.0.0.1:8554/game",
+            width=1280,
+            height=720,
+            fps=60,
+            video_device="gdigrab",
+            audio_device="virtual-audio-capturer",
+            publish_transport="rtsp_udp",
+        )
+
+        self.assertIn("-rtsp_transport", command)
+        self.assertIn("udp", command)
+        self.assertIn("rtsp://127.0.0.1:8554/game", command)
+        self.assertNotIn("whip", command)
 
     def test_build_ffmpeg_publish_command_skips_audio_input_when_audio_device_is_blank(self) -> None:
         _, build_ffmpeg_publish_command = _media_stack_exports()
@@ -329,6 +357,11 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("-zerolatency 1", publisher_text)
         self.assertIn("-rc-lookahead 0", publisher_text)
         self.assertIn("-delay 0", publisher_text)
+        self.assertIn("-fps_mode:v", publisher_text)
+        self.assertIn("passthrough", publisher_text)
+        self.assertIn("-flush_packets", publisher_text)
+        self.assertIn("-muxdelay", publisher_text)
+        self.assertIn("-muxpreload", publisher_text)
         self.assertIn("zerolatency", publisher_text)
         self.assertIn('"lavfi"', publisher_text)
         self.assertIn('"gdigrab"', publisher_text)
@@ -341,9 +374,10 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("-an", publisher_text)
         self.assertIn("audio=", publisher_text)
         self.assertIn("ddagrab=", publisher_text)
-        self.assertIn('[ValidateSet("rtsp", "whip")]', publisher_text)
+        self.assertIn('[ValidateSet("rtsp", "rtsp_udp", "whip")]', publisher_text)
         self.assertIn('[Alias("WhipUrl")]', publisher_text)
         self.assertIn("rtsp://127.0.0.1:8554/game", publisher_text)
+        self.assertIn("-rtsp_transport tcp", publisher_text)
         self.assertIn("-rtsp_transport udp", publisher_text)
         self.assertIn("-f rtsp", publisher_text)
         self.assertIn("-f whip", publisher_text)
@@ -366,8 +400,9 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("winget install", readme_text)
         self.assertIn("virtual-audio-capturer", readme_text)
         self.assertIn("DirectShow", readme_text)
-        self.assertIn("RTSP ingest", readme_text)
+        self.assertIn("RTSP/TCP ingest", readme_text)
         self.assertIn("rtsp://127.0.0.1:8554/game", readme_text)
+        self.assertIn("RTSP/TCP", readme_text)
         self.assertIn("webrtcAdditionalHosts", readme_text)
         self.assertIn("192.168.0.119", readme_text)
         self.assertIn("remote browser", readme_text)
@@ -380,6 +415,8 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("python stream_gateway.py --host 0.0.0.0 --port 8082", readme_text)
         self.assertIn("pwsh .\\scripts\\start_media_stack.ps1", readme_text)
         self.assertIn("pwsh .\\scripts\\start_stream_publisher.ps1", readme_text)
+        self.assertIn("-PublishTransport rtsp_udp", readme_text)
+        self.assertIn("120Hz", readme_text)
 
     def test_publisher_runtime_profile_is_not_locked_by_launch_time_dimensions(self) -> None:
         publisher_script = PROJECT_ROOT / "scripts" / "start_stream_publisher.ps1"
