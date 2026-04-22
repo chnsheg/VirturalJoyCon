@@ -254,24 +254,36 @@ function Get-MissingFirewallRules {
 
     $expectations = @(
         "JoyCon-Web-$GatewayPort",
-        "JoyCon-Frontend-$FrontendPort",
-        "JoyCon-WebRTC-UDP-8189",
-        "JoyCon-WebRTC-Control-UDP"
+        "JoyCon-Web-$FrontendPort",
+        "JoyCon-MediaMTX-WebRTC-8889",
+        "JoyCon-WebRTC-UDP-8189"
     )
 
     return @($expectations | Where-Object { -not (Test-FirewallRuleExists -DisplayName $_) })
 }
 
 function Get-StaleFirewallRules {
-    param([int]$LegacyUdpPort)
+    param(
+        [int]$LegacyUdpPort,
+        [int]$FrontendPort
+    )
 
     $staleRules = @(
-        ("JoyCon-MediaMTX-WebRTC-{0}" -f 8889),
         "JoyCon-UDP-$LegacyUdpPort",
+        "JoyCon-Frontend-$FrontendPort",
+        "JoyCon-WebRTC-Control-UDP",
         "JoyCon-WebRTC-Control-UDP-Dynamic"
     )
 
     return @($staleRules | Where-Object { Test-FirewallRuleExists -DisplayName $_ })
+}
+
+function Remove-FirewallRuleByName {
+    param([Parameter(Mandatory = $true)][string]$DisplayName)
+
+    try {
+        netsh advfirewall firewall delete rule name="$DisplayName" | Out-Null
+    } catch {}
 }
 
 function Test-IsAdministrator {
@@ -478,10 +490,10 @@ if ($python) {
 if (-not $SkipFirewallCheck) {
     Write-Step "[4/7] Checking firewall readiness..."
     $missingFirewallRules = @(Get-MissingFirewallRules -GatewayPort $GatewayPort -FrontendPort $FrontendPort)
-    $staleFirewallRules = @(Get-StaleFirewallRules -LegacyUdpPort $LegacyUdpPort)
+    $staleFirewallRules = @(Get-StaleFirewallRules -LegacyUdpPort $LegacyUdpPort -FrontendPort $FrontendPort)
     $needsFirewallRepair = ($missingFirewallRules.Count -gt 0) -or ($staleFirewallRules.Count -gt 0)
     if (-not $needsFirewallRepair) {
-        Write-Ok "Firewall rules already cover frontend, gateway, WebRTC media, and WebRTC DataChannel access"
+        Write-Ok "Firewall rules already cover frontend, gateway, MediaMTX WebRTC HTTP, and WebRTC media"
     } elseif ($DryRun) {
         if ($missingFirewallRules.Count -gt 0) {
             Write-Note "Missing firewall rules in DryRun: $($missingFirewallRules -join ', ')"
@@ -495,9 +507,17 @@ if (-not $SkipFirewallCheck) {
             throw "Firewall rules need repair: $($firewallProblems -join ', '). Re-run this script as Administrator."
         }
 
-        & $script:ShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script:FixNetworkAccessScript -HttpPort $GatewayPort -FrontendPort $FrontendPort -UdpPort $LegacyUdpPort -WebRtcControlProgram $python.FilePath -EnableWebRtcMedia -SkipUdp
+        & $script:ShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script:FixNetworkAccessScript -HttpPort $GatewayPort -UdpPort $LegacyUdpPort -SkipUdp
         if ($LASTEXITCODE -ne 0) {
             throw "fix_network_access.ps1 failed with exit code $LASTEXITCODE"
+        }
+        & $script:ShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script:FixNetworkAccessScript -HttpPort $FrontendPort -UdpPort $LegacyUdpPort -SkipUdp
+        if ($LASTEXITCODE -ne 0) {
+            throw "fix_network_access.ps1 failed with exit code $LASTEXITCODE"
+        }
+
+        foreach ($staleRule in $staleFirewallRules) {
+            Remove-FirewallRuleByName -DisplayName $staleRule
         }
 
         Write-Ok "Firewall rules repaired"
@@ -624,6 +644,7 @@ if ($lanAddresses.Count -eq 0) {
     foreach ($address in $lanAddresses) {
         Write-Host "  Frontend: http://$($address.IPAddress):$FrontendPort" -ForegroundColor Green
         Write-Host "  Host target: $($address.IPAddress):$GatewayPort" -ForegroundColor Green
-        Write-Host "  Media WHEP: http://$($address.IPAddress):$GatewayPort/media/whep" -ForegroundColor Green
+        Write-Host "  Media Proxy: http://$($address.IPAddress):$GatewayPort/media/whep" -ForegroundColor Green
+        Write-Host "  Media WHEP: http://$($address.IPAddress):8889/game/whep" -ForegroundColor Green
     }
 }

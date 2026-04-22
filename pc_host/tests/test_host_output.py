@@ -88,7 +88,7 @@ function Out-Null {{
             result.stdout,
         )
 
-    def test_fix_network_access_streaming_mode_keeps_8889_local_only_and_opens_frontend(self) -> None:
+    def test_fix_network_access_streaming_mode_opens_1646_webrtc_ports(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "fix_network_access.ps1"
         command = f"""
 function Set-NetConnectionProfile {{ }}
@@ -101,7 +101,7 @@ function netsh {{
 function Out-Null {{
     process {{ $_ }}
 }}
-& '{script_path}' -HttpPort 8082 -FrontendPort 8090 -EnableWebRtcMedia -WebRtcControlProgram 'C:\\Python312\\python.exe' -SkipUdp
+& '{script_path}' -HttpPort 8082 -SkipUdp
 """
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", command],
@@ -116,51 +116,25 @@ function Out-Null {{
             result.stdout,
         )
         self.assertIn(
-            'NETSH:advfirewall firewall add rule name=JoyCon-Frontend-8090',
+            'NETSH:advfirewall firewall add rule name=JoyCon-MediaMTX-WebRTC-8889',
             result.stdout,
         )
         self.assertIn(
             'NETSH:advfirewall firewall add rule name=JoyCon-WebRTC-UDP-8189',
             result.stdout,
         )
-        self.assertIn(
-            'NETSH:advfirewall firewall add rule name=JoyCon-WebRTC-Control-UDP',
-            result.stdout,
-        )
-        self.assertIn(
-            'NETSH:advfirewall firewall delete rule name=JoyCon-WebRTC-Control-UDP-Dynamic',
-            result.stdout,
-        )
+        self.assertIn('localport=8889', result.stdout)
+        self.assertIn('localport=8189', result.stdout)
         self.assertNotIn(
-            'NETSH:advfirewall firewall add rule name=JoyCon-WebRTC-Control-UDP-Dynamic',
+            'JoyCon-WebRTC-Control-UDP',
             result.stdout,
         )
         self.assertNotIn(
             'localport=49152-65535',
             result.stdout,
         )
-        self.assertIn(
-            'program=C:\\Python312\\python.exe',
-            result.stdout,
-        )
-        self.assertIn(
-            'protocol=UDP',
-            result.stdout,
-        )
-        self.assertIn(
-            'profile=any',
-            result.stdout,
-        )
-        self.assertIn(
-            'remoteip=localsubnet',
-            result.stdout,
-        )
-        self.assertIn(
-            'NETSH:advfirewall firewall delete rule name=JoyCon-MediaMTX-WebRTC-8889',
-            result.stdout,
-        )
         self.assertNotIn(
-            'NETSH:advfirewall firewall add rule name=JoyCon-MediaMTX-WebRTC-8889',
+            'program=C:\\Python312\\python.exe',
             result.stdout,
         )
 

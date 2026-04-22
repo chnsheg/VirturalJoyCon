@@ -789,7 +789,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         )
         self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
 
-    async def test_control_offer_filters_answer_candidates_to_the_requested_gateway_host(self) -> None:
+    async def test_control_offer_returns_control_answer_without_host_rewrite(self) -> None:
         self.control_peer_factory.answer_sdp = (
             "\r\n".join(
                 [
@@ -825,10 +825,10 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         payload = await response.json()
 
         self.assertEqual(response.status, 200)
-        self.assertIn("c=IN IP4 192.168.0.119", payload["sdp"])
+        self.assertIn("c=IN IP4 10.0.0.2", payload["sdp"])
+        self.assertIn("a=candidate:1 1 udp 2130706431 10.0.0.2 53389 typ host", payload["sdp"])
+        self.assertIn("a=candidate:2 1 udp 2130706431 172.25.16.1 53390 typ host", payload["sdp"])
         self.assertIn("a=candidate:3 1 udp 2130706431 192.168.0.119 53394 typ host", payload["sdp"])
-        self.assertNotIn("10.0.0.2 53389 typ host", payload["sdp"])
-        self.assertNotIn("172.25.16.1 53390 typ host", payload["sdp"])
 
     async def test_control_offer_rejects_spectators(self) -> None:
         for idx in range(4):

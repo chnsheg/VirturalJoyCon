@@ -1,43 +1,10 @@
 param(
     [int]$HttpPort = 8081,
-    [int]$FrontendPort = 0,
     [int]$UdpPort = 28777,
-    [string]$WebRtcControlProgram = "",
-    [switch]$SkipUdp,
-    [switch]$EnableWebRtcMedia
+    [switch]$SkipUdp
 )
 
 $ErrorActionPreference = 'Stop'
-
-function Remove-FirewallRule {
-    param([Parameter(Mandatory = $true)][string]$Name)
-
-    netsh advfirewall firewall delete rule name="$Name" | Out-Null
-}
-
-function Ensure-FirewallRule {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$Protocol,
-        [Parameter(Mandatory = $true)][int]$Port
-    )
-
-    Remove-FirewallRule -Name $Name
-    netsh advfirewall firewall add rule name="$Name" dir=in action=allow protocol=$Protocol localport=$Port profile=any | Out-Null
-    Write-Host "Rule ensured: $Name" -ForegroundColor Green
-}
-
-function Ensure-ProgramFirewallRule {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$Program,
-        [Parameter(Mandatory = $true)][string]$Protocol
-    )
-
-    Remove-FirewallRule -Name $Name
-    netsh advfirewall firewall add rule name="$Name" dir=in action=allow program="$Program" protocol=$Protocol profile=any remoteip=localsubnet | Out-Null
-    Write-Host "Rule ensured: $Name" -ForegroundColor Green
-}
 
 Write-Host '[1/4] Set WLAN profile to Private (if allowed)...' -ForegroundColor Cyan
 try {
@@ -49,36 +16,23 @@ try {
 
 Write-Host '[2/4] Create firewall rules for JoyCon host...' -ForegroundColor Cyan
 $rules = @(
-    @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort }
+    @{ Name = "JoyCon-Web-$HttpPort"; Protocol = 'TCP'; Port = $HttpPort },
+    @{ Name = "JoyCon-MediaMTX-WebRTC-8889"; Protocol = 'TCP'; Port = 8889 },
+    @{ Name = "JoyCon-WebRTC-UDP-8189"; Protocol = 'UDP'; Port = 8189 }
 )
-
-if ($FrontendPort -gt 0) {
-    $rules += @{ Name = "JoyCon-Frontend-$FrontendPort"; Protocol = 'TCP'; Port = $FrontendPort }
-}
-
-netsh advfirewall firewall delete rule name="JoyCon-MediaMTX-WebRTC-8889" | Out-Null
-
-if ($EnableWebRtcMedia) {
-    $rules += @{ Name = "JoyCon-WebRTC-UDP-8189"; Protocol = 'UDP'; Port = 8189 }
-} else {
-    Remove-FirewallRule -Name "JoyCon-WebRTC-UDP-8189"
-}
-
-if ($WebRtcControlProgram) {
-    Ensure-ProgramFirewallRule -Name "JoyCon-WebRTC-Control-UDP" -Program $WebRtcControlProgram -Protocol "UDP"
-} else {
-    Remove-FirewallRule -Name "JoyCon-WebRTC-Control-UDP"
-}
-Remove-FirewallRule -Name "JoyCon-WebRTC-Control-UDP-Dynamic"
 
 if (-not $SkipUdp) {
     $rules += @{ Name = "JoyCon-UDP-$UdpPort"; Protocol = 'UDP'; Port = $UdpPort }
-} else {
-    Remove-FirewallRule -Name "JoyCon-UDP-$UdpPort"
+}
+
+if ($SkipUdp) {
+    netsh advfirewall firewall delete rule name="JoyCon-UDP-$UdpPort" | Out-Null
 }
 
 foreach ($r in $rules) {
-    Ensure-FirewallRule -Name $r.Name -Protocol $r.Protocol -Port $r.Port
+    netsh advfirewall firewall delete rule name="$($r.Name)" | Out-Null
+    netsh advfirewall firewall add rule name="$($r.Name)" dir=in action=allow protocol=$($r.Protocol) localport=$($r.Port) profile=any | Out-Null
+    Write-Host "Rule ensured: $($r.Name)" -ForegroundColor Green
 }
 
 Write-Host '[3/4] Show candidate LAN IPs...' -ForegroundColor Cyan
@@ -93,14 +47,8 @@ Get-NetTCPConnection -LocalPort $HttpPort -State Listen |
     Format-Table -AutoSize
 
 Write-Host ''
-if ($EnableWebRtcMedia) {
-    if ($FrontendPort -gt 0) {
-        Write-Host "Done. Frontend: <LAN_IP>:$FrontendPort | Host target: <LAN_IP>:$HttpPort (Streaming gateway target, WebRTC 8189/UDP open, Python UDP app rule keeps WebRTC DataChannel reachable, 8889/TCP stays local)" -ForegroundColor Green
-    } else {
-        Write-Host "Done. Host target: <LAN_IP>:$HttpPort (Streaming gateway target, WebRTC 8189/UDP open, Python UDP app rule keeps WebRTC DataChannel reachable, 8889/TCP stays local)" -ForegroundColor Green
-    }
-} elseif ($SkipUdp) {
-    Write-Host "Done. Host target: <LAN_IP>:$HttpPort (TCP only; no UDP or WebRTC firewall rules left open)" -ForegroundColor Green
+if ($SkipUdp) {
+    Write-Host "Done. Host target: <LAN_IP>:$HttpPort (Streaming gateway target, MediaMTX 8889/TCP and WebRTC 8189/UDP open)" -ForegroundColor Green
 } else {
-    Write-Host "Done. Host target: <LAN_IP>:$HttpPort (TCP $HttpPort plus optional legacy UDP $UdpPort)" -ForegroundColor Green
+    Write-Host "Done. Host target: <LAN_IP>:$HttpPort (Streaming gateway target, MediaMTX 8889/TCP, WebRTC 8189/UDP, legacy UDP $UdpPort optional)" -ForegroundColor Green
 }

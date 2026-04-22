@@ -1,51 +1,35 @@
 # 局域网串流 Web Controller
 
-这个目录是 Windows 主机端，用来把手柄控制、屏幕串流和手机端静态网页组合成一个可在同一局域网访问的 Web Controller。
+这个目录是 Windows 主机端。它会启动控制网关、MediaMTX、FFmpeg 推流器和手机访问的静态网页服务器，让同一局域网内的手机通过浏览器看画面并发送手柄输入。
 
 ## 环境安装
 
-### 系统要求
+需要先准备：
 
 - Windows 10/11
 - PowerShell 7
 - Python 3.12 或更高版本
 - `ViGEmBus / Nefarius Virtual Gamepad Emulation Bus`
-- 手机和 PC 在同一局域网
-
-### 安装 Python 依赖
-
-在 `pc_host` 目录执行：
-
-```bash
-pip install -r requirements.txt
-```
-
-### 安装本机运行时
-
-必须具备以下本机依赖：
-
 - `mediamtx.exe`
 - `ffmpeg.exe`
-- 可被 FFmpeg 识别的 Windows `DirectShow` 音频采集设备，例如 `virtual-audio-capturer`
+- 一个 FFmpeg 可识别的 `DirectShow` 音频采集设备，例如 `virtual-audio-capturer`
 
-推荐直接用 `winget` 安装：
+在 `pc_host` 目录安装 Python 依赖：
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+推荐用 `winget` 安装 MediaMTX 和 FFmpeg：
 
 ```powershell
 winget install --id bluenviron.mediamtx --exact
 winget install --id Gyan.FFmpeg.Essentials --exact
 ```
 
-当前串流链路默认是：
-
-- FFmpeg 把画面推到 `rtsp://127.0.0.1:8554/game`
-- MediaMTX 在本机处理 WebRTC / WHEP
-- 外部手机统一通过网关地址访问，不直接连本机内部端口
-
-其中 `rtsp://127.0.0.1:8554/game` 走的是 `RTSP/TCP` 本机内部推流链路。
-
 ## 一键启动
 
-首次启动建议用`管理员`权限打开 `PowerShell 7`，这样脚本可以自动检查并修复防火墙。
+首次启动建议用管理员权限打开 PowerShell 7，因为脚本需要检查并修复防火墙。
 
 在 `pc_host` 目录执行：
 
@@ -54,17 +38,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 pwsh .\scripts\start_lan_streaming_web_controller.ps1
 ```
 
-这个脚本会自动完成：
+这个脚本会检查运行环境、安装 Python 依赖、检查防火墙、启动控制网关、启动 MediaMTX、启动 FFmpeg 推流器，并启动静态网页服务器。
 
-- 检查 `Python 3.12`、`ViGEmBus`、`mediamtx.exe`、`ffmpeg.exe`
-- 安装 `requirements.txt`
-- 检查并修复局域网需要的防火墙规则
-- 启动控制网关
-- 启动 MediaMTX
-- 启动 FFmpeg 发布器
-- 启动静态网页服务器
-
-如果你只想预览启动流程，不真正拉起服务，可以执行：
+如果只想预览启动流程，不真正启动服务：
 
 ```powershell
 pwsh .\scripts\start_lan_streaming_web_controller.ps1 -DryRun -SkipDependencyInstall
@@ -72,70 +48,46 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1 -DryRun -SkipDependencyIns
 
 ## 手机访问
 
-启动完成后，终端会打印局域网地址。假设主机 IP 是 `192.168.0.119`，手机侧使用这 3 个地址：
+启动完成后，终端会打印局域网地址。假设主机 IP 是 `192.168.0.119`：
 
-- 前端页面：`http://192.168.0.119:8090`
-- 抽屉里的主机地址：`192.168.0.119:8082`
-- 媒体地址：`http://192.168.0.119:8082/media/whep`
+- 手机打开：`http://192.168.0.119:8090`
+- 页面抽屉里的主机地址填写：`192.168.0.119:8082`
+- 页面内部媒体代理地址：`http://192.168.0.119:8082/media/whep`
+- MediaMTX 直接 WHEP 地址：`http://192.168.0.119:8889/game/whep`
 
-访问步骤：
-
-1. 手机打开 `http://192.168.0.119:8090`
-2. 打开右侧抽屉
-3. 输入 `192.168.0.119:8082`
-4. 点击 `Connect`
-5. 页面会通过 `WHEP` 从 `http://192.168.0.119:8082/media/whep` 拉取音视频
-
-如果手机打不开页面或连不上主机，优先检查：
-
-- 手机和 PC 是否在同一局域网
-- 是否使用了主机真实 IPv4，而不是 `127.0.0.1`
-- 首次启动时是否以管理员权限运行过脚本，让它完成防火墙配置
+正常使用只需要打开静态页面并填写 `192.168.0.119:8082`。不要填写 `127.0.0.1`，手机无法访问电脑自己的本机地址。
 
 ## 端口说明
 
-### 需要对局域网开放
+需要对局域网开放：
 
 | 端口 | 协议 | 作用 |
 | --- | --- | --- |
 | `8090` | `TCP` | 手机访问静态网页服务器 |
-| `8082` | `TCP` | 控制网关，也是外部统一访问入口 |
-| `8189` | `UDP` | WebRTC 实际媒体传输 |
+| `8082` | `TCP` | 控制网关，处理房间、WebRTC 控制协商和媒体代理 |
+| `8889` | `TCP` | MediaMTX WebRTC / WHEP HTTP 入口，恢复 16:46 版本的开放方式 |
+| `8189` | `UDP` | MediaMTX WebRTC 媒体传输 |
 
-其中 `8189/UDP` 给视频 WebRTC 媒体使用。控制通道也走 WebRTC DataChannel，但 aiortc 会由 Python 进程申请 UDP 端口，所以这里不额外开放一大段 UDP 端口。
-
-一键启动脚本会添加一条 `Python 程序级 UDP` 规则，并限制为 `LocalSubnet`，也就是只允许局域网来源访问。这样控制通道可以继续走 `WebRTC DataChannel`，避免页面显示 `RTC+HTTP`。
-
-### 仅本机使用
-
-以下端口只在主机内部链路使用，`仅本机使用`，不需要对局域网开放：
+仅本机使用，不需要额外对外说明：
 
 | 端口 | 协议 | 作用 |
 | --- | --- | --- |
-| `8889` | `TCP` | MediaMTX 本机 WebRTC / WHEP 入口，上层由网关代理 |
 | `8554` | `TCP` | FFmpeg 推流到 MediaMTX 的 `RTSP/TCP` 入口 |
 | `9997` | `TCP` | MediaMTX API |
-| `28777` | `UDP` | 旧版 legacy UDP 通道；当前一键启动不使用 |
+| `28777` | `UDP` | 旧版 legacy UDP 输入通道，当前一键启动不使用 |
 
-对应的防火墙含义如下：
+本机内部链路会用到 `8554/TCP`、`9997/TCP` 和 `28777/UDP`，但手机访问不需要直接连接这些端口。
 
-- 需要放行：`8090/TCP`、`8082/TCP`、`8189/UDP`
-- 需要允许：Python 程序级 UDP 入站，用于 `WebRTC DataChannel`
-- 不需要放行：`8889/TCP`、`8554/TCP`、`9997/TCP`、`28777/UDP`
+当前脚本不会额外开放一大段动态 UDP 端口，也不会添加程序级 UDP 特殊规则。控制通道仍由页面和 Python 网关通过 WebRTC DataChannel 协商，端口开放方式回到 2026-04-22 16:46 的模型。
 
-如果只想手动修复防火墙，也可以在管理员 PowerShell 7 中执行：
+## 手动修复防火墙
+
+如果一键启动提示防火墙规则缺失，请用管理员 PowerShell 7 在 `pc_host` 目录执行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8082 -FrontendPort 8090 -WebRtcControlProgram (Get-Command python).Source -EnableWebRtcMedia -SkipUdp
+pwsh .\scripts\fix_network_access.ps1 -HttpPort 8082 -SkipUdp
+pwsh .\scripts\fix_network_access.ps1 -HttpPort 8090 -SkipUdp
 ```
 
-这条命令会按当前策略处理 `防火墙`：
-
-- 放行 `8090/TCP`
-- 放行 `8082/TCP`
-- 放行 `8189/UDP`
-- 添加 Python 程序级 UDP 规则，让控制通道继续走 `WebRTC DataChannel`
-- 清理旧的动态 UDP 范围规则
-- 清理旧的 `8889/TCP` 外部规则
-- 清理旧的 `28777/UDP` 外部规则
+这会放行 `8082/TCP`、`8090/TCP`、`8889/TCP` 和 `8189/UDP`。
