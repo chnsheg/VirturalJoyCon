@@ -16,8 +16,10 @@ Keep these three long-running processes open while testing: the Python stream ga
 ## Streaming stack quick start
 
 Use this flow for the shared browser video/audio stream plus WebRTC control gateway. It adds `8082/TCP` for the stream gateway, `8889/TCP` for MediaMTX WebRTC HTTP, and `8189/UDP` for WebRTC media.
-The stable Windows path is FFmpeg low-latency encoding into local RTSP ingest (`rtsp://127.0.0.1:8554/game`), then MediaMTX WHEP/WebRTC playback in the browser.
+The stable Windows path is FFmpeg low-latency encoding into local RTSP/TCP ingest (`rtsp://127.0.0.1:8554/game`), then MediaMTX WHEP/WebRTC playback in the browser.
 Run every PowerShell command in this section with PowerShell 7 via `pwsh`, not Windows PowerShell 5.1.
+
+If you are chasing sub-20ms video latency, the PC display/capture path and the client display both need to sustain 120Hz-class updates. If FFmpeg stats show requested `90` or `120` fps but actual `fps` stays near `59`, or `dup=` keeps climbing, the capture source is capped around 60Hz and the frame budget is already mostly consumed before network and decode.
 
 ### 1. Install dependencies
 
@@ -42,13 +44,16 @@ winget install --id Gyan.FFmpeg.Essentials --exact
 
 The startup scripts auto-detect the default winget install directories, so they still work when a fresh `pwsh` session has not picked up a PATH update yet.
 
-Before starting MediaMTX, set `webrtcAdditionalHosts` in `config/mediamtx.yml` to this host's reachable LAN IP. Example:
+For low latency on the same LAN, keep `config/mediamtx.yml` restricted to the physical Wi-Fi interface:
 
 ```yaml
-webrtcAdditionalHosts: [192.168.0.119]
+webrtcIPsFromInterfaces: true
+webrtcIPsFromInterfacesList:
+  - WLAN
+webrtcAdditionalHosts: []
 ```
 
-If you leave `webrtcAdditionalHosts` unset or empty, a remote browser on the LAN may fail to complete the WebRTC connection even when the page and signaling endpoint are reachable.
+Use the WLAN address printed by Windows, for example `192.168.0.119:8082`, in the controller drawer. Do not use tunnel or virtual-adapter addresses such as `10.x`, `172.25.x`, or `169.254.x` for the LAN latency test. If a remote browser is on the same Wi-Fi and MediaMTX logs still show a wrong WebRTC candidate such as `172.25.x.x` or `169.254.x.x`, restart MediaMTX after fixing `config/mediamtx.yml`.
 
 ### 2. Open the Windows firewall when needed
 
@@ -85,7 +90,7 @@ Run inside `pc_host`:
 pwsh .\scripts\start_stream_publisher.ps1
 ```
 
-The default publisher path assumes an NVIDIA GPU with NVENC, uses `h264_nvenc`, and publishes to MediaMTX through RTSP ingest over UDP for the lowest stable latency on this Windows setup.
+The default publisher path assumes an NVIDIA GPU with NVENC, uses `h264_nvenc`, and publishes to MediaMTX through local RTSP/TCP ingest. TCP is the default because it avoids local RTP packet loss between FFmpeg and MediaMTX, which otherwise forces the browser to recover from damaged or missing H264 frames.
 The script auto-detects a DirectShow audio capture device and prefers virtual or loopback-style devices when available.
 If NVENC is unavailable, use the software fallback without editing the script:
 
@@ -110,6 +115,12 @@ If you later switch to a FFmpeg build with compatible direct WHIP ingest, you ca
 
 ```powershell
 pwsh .\scripts\start_stream_publisher.ps1 -PublishTransport whip -PublishUrl http://127.0.0.1:8889/game/whip
+```
+
+RTSP/UDP remains available only for comparison runs. Use it if you want to verify whether a specific machine can avoid packet loss in MediaMTX logs:
+
+```powershell
+pwsh .\scripts\start_stream_publisher.ps1 -PublishTransport rtsp_udp
 ```
 
 ### 6. Open the frontend and connect
