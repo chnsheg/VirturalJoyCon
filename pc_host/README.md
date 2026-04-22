@@ -1,25 +1,8 @@
 # LAN Wireless Virtual Gamepad Host (MVP)
 
-## Project startup overview
-
-For the current streaming build, start the project from `pc_host` in this order:
-
-1. Install Python and runtime dependencies once.
-2. Open the Windows firewall for the stream gateway and WebRTC ports when a phone or another PC must connect over LAN.
-3. Start `stream_gateway.py` on `8082/TCP`.
-4. Start MediaMTX with `pwsh .\scripts\start_media_stack.ps1`.
-5. Start FFmpeg publishing with `pwsh .\scripts\start_stream_publisher.ps1`.
-6. Host `pc_host\web` as static files, open the page from the client, and enter `LAN_IP:8082` in the drawer.
-
-Keep these three long-running processes open while testing: the Python stream gateway, MediaMTX, and the FFmpeg publisher. Use the standalone controller section later in this document only when you want the input-only `web_host.py` path on `8081/TCP`.
-
 ## Streaming stack quick start
 
 Use this flow for the shared browser video/audio stream plus WebRTC control gateway. It adds `8082/TCP` for the stream gateway, `8889/TCP` for MediaMTX WebRTC HTTP, and `8189/UDP` for WebRTC media.
-The stable Windows path is FFmpeg low-latency encoding into local RTSP/TCP ingest (`rtsp://127.0.0.1:8554/game`), then MediaMTX WHEP/WebRTC playback in the browser.
-Run every PowerShell command in this section with PowerShell 7 via `pwsh`, not Windows PowerShell 5.1.
-
-If you are chasing sub-20ms video latency, the PC display/capture path and the client display both need to sustain 120Hz-class updates. If FFmpeg stats show requested `90` or `120` fps but actual `fps` stays near `59`, or `dup=` keeps climbing, the capture source is capped around 60Hz and the frame budget is already mostly consumed before network and decode.
 
 ### 1. Install dependencies
 
@@ -33,35 +16,23 @@ You also need these non-Python runtime dependencies before the streaming stack w
 
 - `mediamtx.exe` available on `PATH` or passed to `.\scripts\start_media_stack.ps1`
 - `ffmpeg.exe` available on `PATH` or passed to `.\scripts\start_stream_publisher.ps1`
-- A valid Windows DirectShow audio capture device for FFmpeg input, for example `virtual-audio-capturer`
+- A valid Windows audio capture device for FFmpeg WASAPI input, for example `virtual-audio-capturer`
 
-Recommended install commands:
-
-```powershell
-winget install --id bluenviron.mediamtx --exact
-winget install --id Gyan.FFmpeg.Essentials --exact
-```
-
-The startup scripts auto-detect the default winget install directories, so they still work when a fresh `pwsh` session has not picked up a PATH update yet.
-
-For low latency on the same LAN, keep `config/mediamtx.yml` restricted to the physical Wi-Fi interface:
+Before starting MediaMTX, set `webrtcAdditionalHosts` in `config/mediamtx.yml` to this host's reachable LAN IP. Example:
 
 ```yaml
-webrtcIPsFromInterfaces: true
-webrtcIPsFromInterfacesList:
-  - WLAN
-webrtcAdditionalHosts: []
+webrtcAdditionalHosts: [192.168.0.119]
 ```
 
-Use the WLAN address printed by Windows, for example `192.168.0.119:8082`, in the controller drawer. Do not use tunnel or virtual-adapter addresses such as `10.x`, `172.25.x`, or `169.254.x` for the LAN latency test. If a remote browser is on the same Wi-Fi and MediaMTX logs still show a wrong WebRTC candidate such as `172.25.x.x` or `169.254.x.x`, restart MediaMTX after fixing `config/mediamtx.yml`.
+If you leave `webrtcAdditionalHosts` unset or empty, a remote browser on the LAN may fail to complete the WebRTC connection even when the page and signaling endpoint are reachable.
 
 ### 2. Open the Windows firewall when needed
 
-Run inside `pc_host` from an elevated PowerShell 7 session:
+Run inside `pc_host` from an elevated PowerShell session:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8082 -SkipUdp
+.\scripts\fix_network_access.ps1 -HttpPort 8082 -SkipUdp
 ```
 
 The helper keeps the standalone TCP rule behavior and also opens `8889/TCP` for MediaMTX plus `8189/UDP` for WebRTC.
@@ -79,7 +50,7 @@ python stream_gateway.py --host 0.0.0.0 --port 8082
 Run inside `pc_host`:
 
 ```powershell
-pwsh .\scripts\start_media_stack.ps1
+.\scripts\start_media_stack.ps1
 ```
 
 ### 5. Start the Windows publisher
@@ -87,43 +58,19 @@ pwsh .\scripts\start_media_stack.ps1
 Run inside `pc_host`:
 
 ```powershell
-pwsh .\scripts\start_stream_publisher.ps1
+.\scripts\start_stream_publisher.ps1
 ```
 
-The default publisher path assumes an NVIDIA GPU with NVENC, uses `h264_nvenc`, and publishes to MediaMTX through local RTSP/TCP ingest. TCP is the default because it avoids local RTP packet loss between FFmpeg and MediaMTX, which otherwise forces the browser to recover from damaged or missing H264 frames.
-The script auto-detects a DirectShow audio capture device and prefers virtual or loopback-style devices when available.
+The default publisher path assumes an NVIDIA GPU with NVENC and uses `h264_nvenc` for the lowest-latency path.
 If NVENC is unavailable, use the software fallback without editing the script:
 
 ```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -VideoEncoder libx264
+.\scripts\start_stream_publisher.ps1 -VideoEncoder libx264
 ```
 
 The `libx264` fallback keeps the low-latency design with `-preset ultrafast -tune zerolatency`, but it will use more CPU than the NVIDIA NVENC path.
-If you want to force a specific audio source, pass the DirectShow device name explicitly:
 
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -AudioDevice "virtual-audio-capturer"
-```
-
-If Desktop Duplication is unavailable on this machine, use the GDI fallback explicitly:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -VideoDevice gdigrab
-```
-
-If you later switch to a FFmpeg build with compatible direct WHIP ingest, you can opt into it explicitly:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -PublishTransport whip -PublishUrl http://127.0.0.1:8889/game/whip
-```
-
-RTSP/UDP remains available only for comparison runs. Use it if you want to verify whether a specific machine can avoid packet loss in MediaMTX logs:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -PublishTransport rtsp_udp
-```
-
-### 6. Open the frontend and connect
+### 6. Host the frontend and connect
 
 Host `pc_host\web` with any static HTTP server, then connect the page to `LAN_IP:8082`.
 
@@ -167,17 +114,17 @@ If auto-detection does not find a private LAN address, manually enter this PC's 
 
 ### 4. Open the Windows firewall when needed
 
-Run inside `pc_host` from an elevated PowerShell 7 session:
+Run inside `pc_host` from an elevated PowerShell session:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
 ```
 
 If you also need the legacy UDP path:
 
 ```powershell
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
 ```
 
 ### 5. Host the standalone frontend
@@ -186,7 +133,7 @@ Frontend files are in `pc_host\web`. You can host them with any static HTTP serv
 
 ```bash
 cd web
-python -m http.server 8090 --bind 0.0.0.0
+python -m http.server 8090
 ```
 
 ### 6. Open the frontend and connect
@@ -212,11 +159,11 @@ pip install -r requirements.txt
 python web_host.py --host 0.0.0.0 --http-port 8081 --udp-port 28777 --timeout 8 --max-devices 4
 ```
 
-3. If the phone or another PC cannot reach `8081/TCP`, run the firewall helper in an elevated PowerShell 7 window:
+3. If the phone or another PC cannot reach `8081/TCP`, run the firewall helper in an elevated PowerShell window:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
 ```
 
 4. Host `pc_host/web` separately and open it in a browser:
@@ -241,15 +188,15 @@ Usually this means:
 - The current Wi-Fi network profile is `Public`
 - Windows Firewall is not allowing inbound `8081/TCP`
 
-Run inside `pc_host` from an elevated PowerShell 7 session:
+Run inside `pc_host` from an elevated PowerShell session:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
 ```
 
 If you also need the legacy UDP bridge:
 
 ```powershell
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
+.\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
 ```

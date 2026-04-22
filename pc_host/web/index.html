@@ -10,31 +10,14 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>JoyCon Web Pad</title>
-  <link rel="stylesheet" href="/styles.css?v=stream-20260422-10" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <section class="stream-stage" aria-label="Remote game stream">
-    <video id="remoteVideo" class="remote-video remote-video-hidden" playsinline autoplay muted hidden></video>
-    <canvas id="streamBackdropCanvas" class="stream-canvas stream-canvas-backdrop"></canvas>
-    <canvas id="streamCanvas" class="stream-canvas stream-canvas-foreground"></canvas>
+    <video id="remoteVideo" class="remote-video" playsinline autoplay muted></video>
     <div class="stream-stage-overlay">
       <div id="roomStatus" class="room-status">not connected</div>
       <div id="transportMode" class="transport-mode">control: idle</div>
-      <div id="streamTelemetry" class="stream-telemetry" aria-live="polite">
-        <div class="stream-telemetry-line">
-          <span class="stream-telemetry-segment"><span class="stream-telemetry-label">Protocol</span><span class="stream-telemetry-value">Idle</span></span>
-          <span class="stream-telemetry-separator" aria-hidden="true">·</span>
-          <span class="stream-telemetry-segment"><span class="stream-telemetry-label">FPS</span><span class="stream-telemetry-value">--</span></span>
-          <span class="stream-telemetry-separator" aria-hidden="true">·</span>
-          <span class="stream-telemetry-segment"><span class="stream-telemetry-label">Bitrate</span><span class="stream-telemetry-value">--</span></span>
-          <span class="stream-telemetry-separator" aria-hidden="true">·</span>
-          <span class="stream-telemetry-segment"><span class="stream-telemetry-label">Latency</span><span class="stream-telemetry-value">--</span></span>
-          <span class="stream-telemetry-separator" aria-hidden="true">·</span>
-          <span class="stream-telemetry-segment"><span class="stream-telemetry-label">Quality</span><span class="stream-telemetry-value">Idle</span></span>
-          <span class="stream-telemetry-separator" aria-hidden="true">·</span>
-          <span class="stream-telemetry-segment"><span class="stream-telemetry-label">Loss</span><span class="stream-telemetry-value">--</span></span>
-        </div>
-      </div>
     </div>
   </section>
 
@@ -69,7 +52,7 @@
         inputmode="text"
         autocomplete="off"
         spellcheck="false"
-        placeholder="192.168.0.10:8082"
+        placeholder="192.168.0.10:8081"
       />
       <label class="host-drawer-label" for="stickSensitivityInput">Stick sensitivity</label>
       <div class="host-drawer-range-row">
@@ -84,57 +67,6 @@
         />
         <output id="stickSensitivityValue" class="host-drawer-value" for="stickSensitivityInput">68%</output>
       </div>
-      <label class="host-drawer-label" for="controlOpacityInput">Button opacity</label>
-      <div class="host-drawer-range-row">
-        <input
-          id="controlOpacityInput"
-          class="host-drawer-range"
-          type="range"
-          min="0.05"
-          max="0.65"
-          step="0.01"
-          value="0.18"
-        />
-        <output id="controlOpacityValue" class="host-drawer-value" for="controlOpacityInput">18%</output>
-      </div>
-      <label class="host-drawer-toggle-row" for="controllerVisibleInput">
-        <span class="host-drawer-toggle-copy">
-          <span class="host-drawer-section-title">Controller</span>
-          <span class="host-drawer-status">Show on-screen controls</span>
-        </span>
-        <input id="controllerVisibleInput" class="host-drawer-toggle-input" type="checkbox" checked />
-      </label>
-      <label class="host-drawer-toggle-row" for="hudVisibleInput">
-        <span class="host-drawer-toggle-copy">
-          <span class="host-drawer-section-title">HUD</span>
-          <span class="host-drawer-status">Show compact telemetry</span>
-        </span>
-        <input id="hudVisibleInput" class="host-drawer-toggle-input" type="checkbox" checked />
-      </label>
-      <div class="host-drawer-section">
-        <div class="host-drawer-section-title">Stream</div>
-        <div class="host-drawer-grid">
-          <label class="host-drawer-field" for="videoWidthInput">
-            <span>Width</span>
-            <input id="videoWidthInput" class="host-drawer-input" type="number" inputmode="numeric" min="640" max="3840" step="2" value="1280" />
-          </label>
-          <label class="host-drawer-field" for="videoHeightInput">
-            <span>Height</span>
-            <input id="videoHeightInput" class="host-drawer-input" type="number" inputmode="numeric" min="360" max="2160" step="2" value="720" />
-          </label>
-          <label class="host-drawer-field" for="videoFpsInput">
-            <span>FPS</span>
-            <input id="videoFpsInput" class="host-drawer-input" type="number" inputmode="numeric" min="24" max="120" step="1" value="60" />
-          </label>
-          <label class="host-drawer-field" for="videoBitrateInput">
-            <span>Bitrate Kbps</span>
-            <input id="videoBitrateInput" class="host-drawer-input" type="number" inputmode="numeric" min="1500" max="50000" step="100" value="6000" />
-          </label>
-        </div>
-        <button id="streamSettingsSave" class="host-drawer-save host-drawer-save-secondary" type="button">Apply Stream</button>
-        <div id="streamSettingsStatus" class="host-drawer-status" aria-live="polite"></div>
-      </div>
-      <button id="fullscreenPlayback" class="host-drawer-save host-drawer-save-secondary" type="button">Fullscreen</button>
       <button id="hostTargetSave" class="host-drawer-save" type="submit">Connect</button>
       <div id="hostTargetStatus" class="host-drawer-status" aria-live="polite"></div>
     </form>
@@ -213,6 +145,6 @@
     </section>
   </main>
 
-  <script type="module" src="/app.mjs?v=stream-20260422-10"></script>
+  <script type="module" src="/app.mjs"></script>
 </body>
 </html>

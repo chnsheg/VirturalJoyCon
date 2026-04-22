@@ -6,9 +6,6 @@ apiAddress: :9997
 webrtc: yes
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
-webrtcIPsFromInterfaces: true
-webrtcIPsFromInterfacesList:
-  - WLAN
 webrtcAdditionalHosts: []
 webrtcICEServers2: []
 

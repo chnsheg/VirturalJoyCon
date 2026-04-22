@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import inspect
 
 
@@ -9,11 +8,9 @@ class ControlPeerFactory:
         self,
         peer_factory=None,
         session_description_factory=None,
-        input_packet_handler=None,
     ) -> None:
         self._peer_factory = peer_factory
         self._session_description_factory = session_description_factory
-        self._input_packet_handler = input_packet_handler
         self.active_peers: set[object] = set()
 
     @staticmethod
@@ -22,15 +19,6 @@ class ControlPeerFactory:
             getattr(channel, "label", None) == "joycon.control.v1"
             and getattr(channel, "ordered", False) is True
             and getattr(channel, "maxRetransmits", None) is None
-            and getattr(channel, "maxPacketLifeTime", None) is None
-        )
-
-    @staticmethod
-    def accepts_input_channel(channel) -> bool:
-        return (
-            getattr(channel, "label", None) == "joycon.input.v1"
-            and getattr(channel, "ordered", True) is False
-            and getattr(channel, "maxRetransmits", None) == 0
             and getattr(channel, "maxPacketLifeTime", None) is None
         )
 
@@ -48,51 +36,6 @@ class ControlPeerFactory:
             if callable(close):
                 close()
         return False
-
-    def configure_input_channel(self, channel) -> bool:
-        if self.accepts_input_channel(channel):
-            @channel.on("message")
-            def on_message(message) -> None:
-                if self._input_packet_handler is None:
-                    return
-
-                payload = message
-                if isinstance(payload, bytes):
-                    try:
-                        payload = payload.decode("utf-8")
-                    except Exception:
-                        return
-
-                if not isinstance(payload, str):
-                    return
-
-                try:
-                    packet = json.loads(payload)
-                except Exception:
-                    return
-
-                if not isinstance(packet, dict):
-                    return
-
-                try:
-                    result = self._input_packet_handler(packet)
-                    if inspect.isawaitable(result):
-                        return None
-                except Exception:
-                    return None
-
-            return True
-
-        if getattr(channel, "label", None) == "joycon.input.v1":
-            close = getattr(channel, "close", None)
-            if callable(close):
-                close()
-        return False
-
-    def configure_data_channel(self, channel) -> bool:
-        if self.configure_control_channel(channel):
-            return True
-        return self.configure_input_channel(channel)
 
     def _create_peer(self):
         if self._peer_factory is not None:
@@ -141,7 +84,7 @@ class ControlPeerFactory:
 
         @peer.on("datachannel")
         def on_datachannel(channel) -> None:
-            self.configure_data_channel(channel)
+            self.configure_control_channel(channel)
 
         @peer.on("connectionstatechange")
         async def on_connectionstatechange() -> None:

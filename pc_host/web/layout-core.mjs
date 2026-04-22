@@ -10,9 +10,9 @@ export function computeLayoutMetrics({ width, height }) {
   const ultraCompact = safeHeight < 410;
 
   const stickSize = clamp(
-    Math.round(Math.min(safeWidth * (compactLayout ? 0.18 : 0.225), safeHeight * (compactLayout ? 0.39 : 0.5))),
-    ultraCompact ? 126 : 146,
-    compactLayout ? 168 : 244,
+    Math.round(Math.min(safeWidth * (compactLayout ? 0.165 : 0.205), safeHeight * (compactLayout ? 0.36 : 0.48))),
+    ultraCompact ? 122 : 140,
+    compactLayout ? 156 : 228,
   );
   const faceSize = clamp(
     Math.round(Math.min(safeWidth * (compactLayout ? 0.058 : 0.07), safeHeight * (compactLayout ? 0.155 : 0.19))),
@@ -55,7 +55,7 @@ export function computeLayoutMetrics({ width, height }) {
     6,
     compactLayout ? 12 : 18,
   );
-  const padTop = compactLayout ? 6 : 8;
+  const padTop = compactLayout ? 14 : 30;
 
   return {
     layoutMode: compactLayout ? "compact" : "regular",

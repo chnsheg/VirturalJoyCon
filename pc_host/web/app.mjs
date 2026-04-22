@@ -12,15 +12,12 @@ import {
 } from "./input-core.mjs";
 import {
   buildTransportUrls,
-  DEFAULT_STREAM_SETTINGS,
   getStickResponseExponent,
   HostDrawerController,
-  normalizeHostTarget,
-  normalizeStreamSettings,
-} from "./host-config.mjs?v=stream-20260422-9";
+} from "./host-config.mjs";
 import { computeLayoutMetrics } from "./layout-core.mjs";
 import { getControlHudText, negotiateControlPeer } from "./stream-control.mjs";
-import { createStreamCanvasRenderer, subscribeViaWhep } from "./stream-media.mjs?v=stream-20260422-3";
+import { subscribeViaWhep } from "./stream-media.mjs";
 import { createInitialStreamState, createRoomSessionClient, roomStatusText } from "./stream-session.mjs";
 
 const connEl = document.getElementById("conn");
@@ -34,37 +31,12 @@ const hostTargetFormEl = document.getElementById("hostTargetForm");
 const hostTargetInputEl = document.getElementById("hostTargetInput");
 const stickSensitivityInputEl = document.getElementById("stickSensitivityInput");
 const stickSensitivityValueEl = document.getElementById("stickSensitivityValue");
-const controlOpacityInputEl = document.getElementById("controlOpacityInput");
-const controlOpacityValueEl = document.getElementById("controlOpacityValue");
-const controllerVisibleInputEl = document.getElementById("controllerVisibleInput");
-const hudVisibleInputEl = document.getElementById("hudVisibleInput");
 const hostTargetStatusEl = document.getElementById("hostTargetStatus");
 const controllerEl = document.querySelector(".controller");
-const leftTriggerEl = document.getElementById("leftTrigger");
-const rightTriggerEl = document.getElementById("rightTrigger");
-const leftStickEl = document.getElementById("leftStick");
-const rightStickEl = document.getElementById("rightStick");
 const remoteVideoEl = document.getElementById("remoteVideo");
-const streamBackdropCanvasEl = document.getElementById("streamBackdropCanvas");
-const streamCanvasEl = document.getElementById("streamCanvas");
 const roomStatusEl = document.getElementById("roomStatus");
 const transportModeEl = document.getElementById("transportMode");
-const streamTelemetryEl = document.getElementById("streamTelemetry");
-const videoWidthInputEl = document.getElementById("videoWidthInput");
-const videoHeightInputEl = document.getElementById("videoHeightInput");
-const videoFpsInputEl = document.getElementById("videoFpsInput");
-const videoBitrateInputEl = document.getElementById("videoBitrateInput");
-const streamSettingsSaveEl = document.getElementById("streamSettingsSave");
-const streamSettingsStatusEl = document.getElementById("streamSettingsStatus");
-const fullscreenPlaybackEl = document.getElementById("fullscreenPlayback");
 const STREAM_RECONNECT_TOKEN_KEY = "joycon_stream_reconnect_token";
-const STREAM_APPLY_POLL_INTERVAL_MS = 180;
-const STREAM_APPLY_POLL_ATTEMPTS = 20;
-const STREAM_AUTOSAVE_DELAY_MS = 520;
-const STREAM_TELEMETRY_POLL_MS = 1000;
-const STREAM_TELEMETRY_SMOOTHING_ALPHA = 0.34;
-const STREAM_RESYNC_COOLDOWN_MS = 1200;
-const STREAM_STALE_FRAME_THRESHOLD_MS = 3600;
 
 window.addEventListener("error", (event) => {
   connEl.textContent = `JS error: ${event.message || "unknown"}`;
@@ -160,39 +132,11 @@ let lastPingSentAt = -Infinity;
 let streamAttempt = 0;
 let activeMediaPeer = null;
 let activeControlPeer = null;
-let activeControlChannel = null;
-let activeInputChannel = null;
 let controlHudMode = "idle";
-let streamSettingsAutoSaveTimer = null;
-let hostDrawerWasOpen = false;
-let streamTelemetryInFlight = false;
-let lastStreamTelemetryPollAt = -Infinity;
-let lastStreamTelemetrySample = null;
-let lastStreamTelemetryRenderAt = -Infinity;
-let lastStreamTelemetryMarkup = "";
-let currentStreamTelemetryMetrics = {
-  fps: Number.NaN,
-  bitrateKbps: Number.NaN,
-  lossPercent: Number.NaN,
-};
-let lastStreamFrameAt = performance.now();
-let lastStreamFrameCount = 0;
-let lastStreamCurrentTime = 0;
-let lastTelemetryVideoSample = null;
-let streamResyncInFlight = false;
-let lastStreamResyncAt = -Infinity;
-let appWasHidden = globalThis.document?.visibilityState === "hidden";
-let immersiveRequestInFlight = false;
 const streamState = createInitialStreamState();
-const streamRenderer = createStreamCanvasRenderer({
-  videoEl: remoteVideoEl,
-  canvasEl: streamCanvasEl,
-  backdropCanvasEl: streamBackdropCanvasEl,
-});
 
 const transmitter = new LatestStateTransmitter({
   getSocket: () => ws,
-  getDataChannel: () => activeInputChannel,
   readState: () => state,
   minIntervalMs: 8,
   heartbeatMs: 220,
@@ -206,7 +150,7 @@ function updateConnectionText(text) {
 }
 
 function updateSlot(slot, mode = transportMode) {
-  slotEl.textContent = `slot: ${slot}`;
+  slotEl.textContent = `slot: ${slot} mode:${mode}`;
 }
 
 function clearSlot(mode = transportMode) {
@@ -220,353 +164,9 @@ function renderRoomState() {
 
   if (transportModeEl) {
     transportModeEl.textContent = getControlHudText(controlHudMode);
-    transportModeEl.hidden = true;
-    transportModeEl.setAttribute("aria-hidden", "true");
   }
 
   globalThis.document?.body?.classList?.toggle("stream-degraded", Boolean(streamState.degraded));
-  renderStreamTelemetry(performance.now(), { force: true });
-}
-
-function readVideoProgress(videoEl) {
-  const playbackQuality = videoEl?.getVideoPlaybackQuality?.();
-  const frameCount = Number(
-    playbackQuality?.totalVideoFrames
-    ?? playbackQuality?.totalFrames
-    ?? videoEl?.webkitDecodedFrameCount
-    ?? videoEl?.mozDecodedFrames
-    ?? 0,
-  );
-  const currentTime = Number(videoEl?.currentTime ?? 0);
-  return {
-    frameCount: Number.isFinite(frameCount) ? frameCount : 0,
-    currentTime: Number.isFinite(currentTime) ? currentTime : 0,
-  };
-}
-
-function resetStreamDiagnostics(nowMs = performance.now()) {
-  lastStreamTelemetryPollAt = -Infinity;
-  lastStreamTelemetrySample = null;
-  lastStreamTelemetryRenderAt = -Infinity;
-  lastStreamTelemetryMarkup = "";
-  currentStreamTelemetryMetrics = {
-    fps: Number.NaN,
-    bitrateKbps: Number.NaN,
-    lossPercent: Number.NaN,
-  };
-  const progress = readVideoProgress(remoteVideoEl);
-  lastStreamFrameAt = nowMs;
-  lastStreamFrameCount = progress.frameCount;
-  lastStreamCurrentTime = progress.currentTime;
-  lastTelemetryVideoSample = {
-    nowMs,
-    frameCount: progress.frameCount,
-    currentTime: progress.currentTime,
-  };
-}
-
-function getConfiguredHostTarget() {
-  return hostDrawerController.snapshot().hostTarget;
-}
-
-function smoothTelemetryMetric(previousValue, nextValue, alpha = STREAM_TELEMETRY_SMOOTHING_ALPHA) {
-  if (!Number.isFinite(nextValue) || nextValue < 0) {
-    return previousValue;
-  }
-
-  if (!Number.isFinite(previousValue) || previousValue < 0) {
-    return nextValue;
-  }
-
-  return Number((previousValue + ((nextValue - previousValue) * alpha)).toFixed(2));
-}
-
-function formatBitrateKbps(value) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return "--";
-  }
-
-  if (value >= 1000) {
-    return `${(value / 1000).toFixed(1)} Mbps`;
-  }
-
-  return `${Math.round(value)} kbps`;
-}
-
-function formatFps(value) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return "--";
-  }
-
-  return `${Math.round(value)} fps`;
-}
-
-function formatLossPercent(value) {
-  if (!Number.isFinite(value) || value < 0) {
-    return "--";
-  }
-
-  return `${value.toFixed(value >= 10 ? 0 : 1)}%`;
-}
-
-function formatProtocolLabel(mode) {
-  if (!activeMediaPeer) {
-    if (mode === "ws") {
-      return "WS";
-    }
-    if (mode === "http") {
-      return "HTTP";
-    }
-    return "Idle";
-  }
-
-  if (mode === "webrtc") {
-    return "RTC";
-  }
-
-  if (mode === "ws") {
-    return "RTC+WS";
-  }
-
-  if (mode === "http") {
-    return "RTC+HTTP";
-  }
-
-  return "RTC";
-}
-
-function describeStreamQuality({ fps, lossPercent }) {
-  if (!activeMediaPeer) {
-    return "idle";
-  }
-
-  if (streamState.lastError) {
-    return "recovering";
-  }
-
-  if (controlHudMode !== "webrtc") {
-    return "degraded";
-  }
-
-  if (!Number.isFinite(fps)) {
-    return "warming";
-  }
-
-  if (Number.isFinite(lossPercent) && lossPercent >= 8) {
-    return "poor";
-  }
-
-  if (fps < 24) {
-    return "poor";
-  }
-
-  if ((Number.isFinite(lossPercent) && lossPercent >= 3) || fps < 48) {
-    return "fair";
-  }
-
-  return "good";
-}
-
-function estimatePlaybackFps(videoEl) {
-  const progress = readVideoProgress(videoEl);
-  if (progress.frameCount <= 0 || progress.currentTime <= 0.05) {
-    return Number.NaN;
-  }
-
-  return progress.frameCount / progress.currentTime;
-}
-
-function updateLocalVideoTelemetry(nowMs) {
-  const progress = readVideoProgress(remoteVideoEl);
-  if (!lastTelemetryVideoSample) {
-    lastTelemetryVideoSample = {
-      nowMs,
-      frameCount: progress.frameCount,
-      currentTime: progress.currentTime,
-    };
-    return;
-  }
-
-  const deltaMs = nowMs - lastTelemetryVideoSample.nowMs;
-  const frameDelta = Math.max(0, progress.frameCount - lastTelemetryVideoSample.frameCount);
-  const timeDelta = Math.max(0, progress.currentTime - lastTelemetryVideoSample.currentTime);
-
-  if (deltaMs <= 0) {
-    lastTelemetryVideoSample = {
-      nowMs,
-      frameCount: progress.frameCount,
-      currentTime: progress.currentTime,
-    };
-    return;
-  }
-
-  if (deltaMs >= 250 && (frameDelta > 0 || timeDelta > 0)) {
-    const fpsFromFrames = frameDelta > 0 ? frameDelta / (deltaMs / 1000) : Number.NaN;
-    const fpsFromPlayback = (frameDelta > 0 && timeDelta > 0) ? frameDelta / timeDelta : Number.NaN;
-    const measuredFps =
-      Number.isFinite(fpsFromPlayback) && fpsFromPlayback > 0
-        ? fpsFromPlayback
-        : fpsFromFrames;
-    currentStreamTelemetryMetrics.fps = smoothTelemetryMetric(
-      currentStreamTelemetryMetrics.fps,
-      measuredFps,
-    );
-    lastTelemetryVideoSample = {
-      nowMs,
-      frameCount: progress.frameCount,
-      currentTime: progress.currentTime,
-    };
-  }
-}
-
-function buildStreamTelemetryItems(nowMs = performance.now()) {
-  const fallbackFps = estimatePlaybackFps(remoteVideoEl);
-  const telemetryFps = Number.isFinite(currentStreamTelemetryMetrics.fps) && currentStreamTelemetryMetrics.fps > 0
-    ? currentStreamTelemetryMetrics.fps
-    : fallbackFps;
-  const quality = describeStreamQuality({
-    fps: telemetryFps,
-    lossPercent: currentStreamTelemetryMetrics.lossPercent,
-  });
-  return [
-    { label: "Protocol", value: formatProtocolLabel(controlHudMode) },
-    { label: "FPS", value: formatFps(telemetryFps) },
-    { label: "Bitrate", value: formatBitrateKbps(currentStreamTelemetryMetrics.bitrateKbps) },
-    { label: "Latency", value: latencyTracker.getDisplayValue(nowMs) },
-    { label: "Quality", value: quality },
-    { label: "Loss", value: formatLossPercent(currentStreamTelemetryMetrics.lossPercent) },
-  ];
-}
-
-function buildStreamTelemetryMarkup(nowMs = performance.now()) {
-  const items = buildStreamTelemetryItems(nowMs);
-  return `
-    <div class="stream-telemetry-line">
-      ${items.map(({ label, value }, index) => `
-        ${index > 0 ? '<span class="stream-telemetry-separator" aria-hidden="true">·</span>' : ""}
-        <span class="stream-telemetry-segment">
-          <span class="stream-telemetry-label">${label}</span>
-          <span class="stream-telemetry-value">${value}</span>
-        </span>
-      `).join("")}
-    </div>
-  `;
-}
-
-function renderStreamTelemetry(nowMs = performance.now(), { force = false } = {}) {
-  if (!streamTelemetryEl) {
-    return;
-  }
-
-  const { hudVisible } = hostDrawerController.snapshot();
-  streamTelemetryEl.hidden = !hudVisible;
-  if (!hudVisible) {
-    return;
-  }
-
-  if (!force && (nowMs - lastStreamTelemetryRenderAt) < STREAM_TELEMETRY_POLL_MS) {
-    return;
-  }
-
-  const markup = buildStreamTelemetryMarkup(nowMs);
-  if (!force && markup === lastStreamTelemetryMarkup) {
-    lastStreamTelemetryRenderAt = nowMs;
-    return;
-  }
-
-  streamTelemetryEl.innerHTML = markup;
-  lastStreamTelemetryMarkup = markup;
-  lastStreamTelemetryRenderAt = nowMs;
-}
-
-function selectInboundVideoStats(report) {
-  if (!report || typeof report.forEach !== "function") {
-    return null;
-  }
-
-  let selected = null;
-  report.forEach((stat) => {
-    if (!stat) {
-      return;
-    }
-
-    const isVideo = stat.kind === "video" || stat.mediaType === "video";
-    const isInboundVideo = stat.type === "inbound-rtp" && isVideo;
-    const isTrackVideo = stat.type === "track" && isVideo;
-    if (isInboundVideo || isTrackVideo) {
-      selected = stat;
-    }
-  });
-  return selected;
-}
-
-async function pollStreamTelemetry(nowMs) {
-  if (!streamTelemetryEl) {
-    return;
-  }
-
-  updateLocalVideoTelemetry(nowMs);
-
-  if (streamTelemetryInFlight || (nowMs - lastStreamTelemetryPollAt) < STREAM_TELEMETRY_POLL_MS) {
-    return;
-  }
-
-  lastStreamTelemetryPollAt = nowMs;
-
-  if (!activeMediaPeer || typeof activeMediaPeer.getStats !== "function") {
-    renderStreamTelemetry(nowMs);
-    return;
-  }
-
-  streamTelemetryInFlight = true;
-  try {
-    const report = await activeMediaPeer.getStats();
-    const videoStats = selectInboundVideoStats(report);
-    if (!videoStats) {
-      renderStreamTelemetry(nowMs);
-      return;
-    }
-
-    const nextSample = {
-      nowMs,
-      framesDecoded: Number(videoStats.framesDecoded ?? 0),
-      bytesReceived: Number(videoStats.bytesReceived ?? 0),
-      packetsReceived: Number(videoStats.packetsReceived ?? 0),
-      packetsLost: Number(videoStats.packetsLost ?? 0),
-    };
-    let metrics = null;
-    if (lastStreamTelemetrySample) {
-      const deltaMs = nextSample.nowMs - lastStreamTelemetrySample.nowMs;
-      if (deltaMs > 0) {
-        const deltaSeconds = deltaMs / 1000;
-        const framesDelta = Math.max(0, nextSample.framesDecoded - lastStreamTelemetrySample.framesDecoded);
-        const bytesDelta = Math.max(0, nextSample.bytesReceived - lastStreamTelemetrySample.bytesReceived);
-        const packetsReceivedDelta = Math.max(0, nextSample.packetsReceived - lastStreamTelemetrySample.packetsReceived);
-        const packetsLostDelta = Math.max(0, nextSample.packetsLost - lastStreamTelemetrySample.packetsLost);
-        const totalPackets = packetsReceivedDelta + packetsLostDelta;
-        metrics = {
-          fps: framesDelta / deltaSeconds,
-          bitrateKbps: (bytesDelta * 8) / deltaSeconds / 1000,
-          lossPercent: totalPackets > 0 ? (packetsLostDelta / totalPackets) * 100 : 0,
-        };
-      }
-    }
-
-    lastStreamTelemetrySample = nextSample;
-    if (metrics) {
-      currentStreamTelemetryMetrics = {
-        ...currentStreamTelemetryMetrics,
-        fps: smoothTelemetryMetric(currentStreamTelemetryMetrics.fps, metrics.fps),
-        bitrateKbps: smoothTelemetryMetric(currentStreamTelemetryMetrics.bitrateKbps, metrics.bitrateKbps),
-        lossPercent: smoothTelemetryMetric(currentStreamTelemetryMetrics.lossPercent, metrics.lossPercent),
-      };
-    }
-    renderStreamTelemetry(nowMs);
-  } catch {
-    renderStreamTelemetry(nowMs);
-  } finally {
-    streamTelemetryInFlight = false;
-  }
 }
 
 function updateStreamDegradedState() {
@@ -579,17 +179,11 @@ function updateStreamDegradedState() {
 function setControlHudMode(mode) {
   controlHudMode = mode;
   updateStreamDegradedState();
-  renderStreamTelemetry(performance.now(), { force: true });
 }
 
 function syncControlHudToTransport() {
   if (streamState.role === "spectator") {
     setControlHudMode("idle");
-    return;
-  }
-
-  if (activeInputChannel?.readyState === "open") {
-    setControlHudMode("webrtc");
     return;
   }
 
@@ -606,18 +200,6 @@ function syncControlHudToTransport() {
   setControlHudMode("idle");
 }
 
-function bindRtcChannelLifecycle(channel) {
-  if (!channel || typeof channel.addEventListener !== "function") {
-    return;
-  }
-
-  ["open", "closing", "close", "error"].forEach((eventName) => {
-    channel.addEventListener(eventName, () => {
-      syncControlHudToTransport();
-    });
-  });
-}
-
 function closeStreamPeer(peer) {
   try {
     peer?.close?.();
@@ -630,15 +212,11 @@ function resetStreamingState() {
   closeStreamPeer(activeControlPeer);
   activeMediaPeer = null;
   activeControlPeer = null;
-  activeControlChannel = null;
-  activeInputChannel = null;
-  streamRenderer.stop();
   if (remoteVideoEl) {
     remoteVideoEl.srcObject = null;
   }
   Object.assign(streamState, createInitialStreamState());
   setControlHudMode("idle");
-  resetStreamDiagnostics(performance.now());
 }
 
 async function connectMedia(hostTarget) {
@@ -694,10 +272,8 @@ async function connectStreaming(hostTarget) {
         return;
       }
       activeMediaPeer = mediaPeer;
-      streamRenderer.start();
       streamState.lastError = "";
       updateStreamDegradedState();
-      resetStreamDiagnostics(performance.now());
     } catch {
       if (currentAttempt !== streamAttempt) {
         return;
@@ -728,11 +304,7 @@ async function connectStreaming(hostTarget) {
         return;
       }
       activeControlPeer = negotiated.peer;
-      activeControlChannel = negotiated.controlChannel ?? null;
-      activeInputChannel = negotiated.inputChannel ?? null;
-      bindRtcChannelLifecycle(activeControlChannel);
-      bindRtcChannelLifecycle(activeInputChannel);
-      syncControlHudToTransport();
+      setControlHudMode("webrtc");
     } catch {
       if (currentAttempt !== streamAttempt) {
         return;
@@ -758,14 +330,6 @@ function formatStickSensitivityValue(sensitivity) {
   return `${Math.round(sensitivity * 100)}%`;
 }
 
-function formatControlOpacityValue(controlOpacity) {
-  return `${Math.round(controlOpacity * 100)}%`;
-}
-
-function deriveActiveControlOpacity(controlOpacity) {
-  return Number(clamp(controlOpacity + 0.14, 0.18, 0.72).toFixed(2));
-}
-
 function applyStickSensitivitySetting(sensitivity) {
   const responseExponent = getStickResponseExponent(sensitivity);
   stickProcessors.left.setResponseExponent(responseExponent);
@@ -780,184 +344,6 @@ function applyStickSensitivitySetting(sensitivity) {
   }
 }
 
-function applyControlOpacitySetting(controlOpacity) {
-  if (controlOpacityInputEl) {
-    controlOpacityInputEl.value = String(controlOpacity);
-  }
-
-  if (controlOpacityValueEl) {
-    controlOpacityValueEl.textContent = formatControlOpacityValue(controlOpacity);
-  }
-
-  const rootStyle = document.documentElement?.style;
-  rootStyle?.setProperty?.("--transparent-control-alpha", String(controlOpacity));
-  rootStyle?.setProperty?.("--transparent-control-active-alpha", String(deriveActiveControlOpacity(controlOpacity)));
-}
-
-function applyControllerVisibilitySetting(controllerVisible) {
-  if (controllerVisibleInputEl) {
-    controllerVisibleInputEl.checked = Boolean(controllerVisible);
-  }
-
-  if (controllerEl) {
-    controllerEl.hidden = !controllerVisible;
-    controllerEl.setAttribute("aria-hidden", controllerVisible ? "false" : "true");
-  }
-}
-
-function applyHudVisibilitySetting(hudVisible) {
-  if (hudVisibleInputEl) {
-    hudVisibleInputEl.checked = Boolean(hudVisible);
-  }
-
-  if (streamTelemetryEl) {
-    streamTelemetryEl.hidden = !hudVisible;
-  }
-}
-
-function buildStreamSettingsUrl(hostTarget) {
-  return `http://${hostTarget}/api/stream/settings`;
-}
-
-function waitForTimeout(delayMs) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, delayMs);
-  });
-}
-
-async function pollAppliedStreamSettings(hostTarget) {
-  for (let attempt = 0; attempt < STREAM_APPLY_POLL_ATTEMPTS; attempt += 1) {
-    await waitForTimeout(STREAM_APPLY_POLL_INTERVAL_MS);
-
-    try {
-      const response = await fetch(buildStreamSettingsUrl(hostTarget), {
-        method: "GET",
-        cache: "no-store",
-      });
-      if (!response.ok) {
-        continue;
-      }
-
-      const payload = await response.json();
-      if (payload?.applied) {
-        return payload;
-      }
-    } catch {}
-  }
-
-  return null;
-}
-
-function applyStreamSettingsForm(settings = DEFAULT_STREAM_SETTINGS) {
-  const normalized = normalizeStreamSettings(settings);
-  if (videoWidthInputEl) {
-    videoWidthInputEl.value = String(normalized.width);
-  }
-  if (videoHeightInputEl) {
-    videoHeightInputEl.value = String(normalized.height);
-  }
-  if (videoFpsInputEl) {
-    videoFpsInputEl.value = String(normalized.fps);
-  }
-  if (videoBitrateInputEl) {
-    videoBitrateInputEl.value = String(normalized.bitrateKbps);
-  }
-}
-
-function readStreamSettingsForm() {
-  return normalizeStreamSettings({
-    width: videoWidthInputEl?.value,
-    height: videoHeightInputEl?.value,
-    fps: videoFpsInputEl?.value,
-    bitrateKbps: videoBitrateInputEl?.value,
-  });
-}
-
-async function loadStreamSettings(hostTarget) {
-  if (!streamSettingsStatusEl) {
-    return DEFAULT_STREAM_SETTINGS;
-  }
-
-  if (!hostTarget) {
-    applyStreamSettingsForm(DEFAULT_STREAM_SETTINGS);
-    streamSettingsStatusEl.textContent = "";
-    return DEFAULT_STREAM_SETTINGS;
-  }
-
-  try {
-    const response = await fetch(buildStreamSettingsUrl(hostTarget), {
-      method: "GET",
-      cache: "no-store",
-    });
-    if (!response.ok) {
-      throw new Error(`http_${response.status}`);
-    }
-    const payload = await response.json();
-    const settings = normalizeStreamSettings(payload);
-    applyStreamSettingsForm(settings);
-    streamSettingsStatusEl.textContent = payload.applied ? "stream applied" : "stream profile ready";
-    return settings;
-  } catch {
-    applyStreamSettingsForm(DEFAULT_STREAM_SETTINGS);
-    streamSettingsStatusEl.textContent = "stream profile unavailable";
-    return DEFAULT_STREAM_SETTINGS;
-  }
-}
-
-async function saveStreamSettings(hostTarget) {
-  if (!streamSettingsStatusEl) {
-    return;
-  }
-
-  if (!hostTarget) {
-    streamSettingsStatusEl.textContent = "Set the host first";
-    return;
-  }
-
-  const settings = readStreamSettingsForm();
-  applyStreamSettingsForm(settings);
-  streamSettingsStatusEl.textContent = "saving stream profile";
-
-  try {
-    const response = await fetch(buildStreamSettingsUrl(hostTarget), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok || payload?.ok === false) {
-      throw new Error(payload?.reason || `http_${response.status}`);
-    }
-    applyStreamSettingsForm(payload);
-    if (payload.applied) {
-      streamSettingsStatusEl.textContent = "stream applied";
-      return;
-    }
-
-    streamSettingsStatusEl.textContent = "applying stream profile";
-    const appliedPayload = await pollAppliedStreamSettings(hostTarget);
-    if (appliedPayload) {
-      applyStreamSettingsForm(appliedPayload);
-      streamSettingsStatusEl.textContent = "stream applied";
-      return;
-    }
-
-    streamSettingsStatusEl.textContent = "saved; publisher still reloading";
-  } catch {
-    streamSettingsStatusEl.textContent = "save failed";
-  }
-}
-
-function resolveStreamSettingsHostTarget() {
-  const currentInput = normalizeHostTarget(hostTargetInputEl?.value ?? "");
-  if (currentInput.ok) {
-    return currentInput.value;
-  }
-
-  return hostDrawerController.snapshot().hostTarget;
-}
-
 function renderHostDrawer(statusMessage = "") {
   const snapshot = hostDrawerController.snapshot();
   hostDrawerEl.classList.toggle("is-open", snapshot.isOpen);
@@ -965,120 +351,10 @@ function renderHostDrawer(statusMessage = "") {
   hostDrawerHandleEl.setAttribute("aria-expanded", snapshot.isOpen ? "true" : "false");
   hostDrawerBackdropEl.hidden = !snapshot.isOpen;
   hostDrawerBackdropEl.classList.toggle("is-visible", snapshot.isOpen);
-  const draftHostTarget = snapshot.hostTargetDraft || snapshot.hostTarget;
-  if (!snapshot.isOpen || !hostDrawerWasOpen) {
-    hostTargetInputEl.value = draftHostTarget;
-  }
+  hostTargetInputEl.value = snapshot.isOpen ? hostTargetInputEl.value || snapshot.hostTarget : snapshot.hostTarget;
   hostTargetStatusEl.textContent = snapshot.error || statusMessage;
   applyStickSensitivitySetting(snapshot.stickSensitivity);
-  applyControlOpacitySetting(snapshot.controlOpacity);
-  applyControllerVisibilitySetting(snapshot.controllerVisible);
-  applyHudVisibilitySetting(snapshot.hudVisible);
-  renderStreamTelemetry(performance.now(), { force: true });
   updateHostText();
-  hostDrawerWasOpen = snapshot.isOpen;
-}
-
-async function requestImmersiveViewport({ silent = true } = {}) {
-  const documentEl = globalThis.document;
-  const rootEl = documentEl?.documentElement;
-  if (!rootEl || typeof rootEl.requestFullscreen !== "function") {
-    if (!silent) {
-      hostTargetStatusEl.textContent = "fullscreen unavailable";
-    }
-    return false;
-  }
-
-  if (documentEl.fullscreenElement || immersiveRequestInFlight) {
-    return Boolean(documentEl.fullscreenElement);
-  }
-
-  immersiveRequestInFlight = true;
-  try {
-    await rootEl.requestFullscreen({ navigationUI: "hide" });
-    try {
-      await globalThis.screen?.orientation?.lock?.("landscape");
-    } catch {}
-    if (!silent) {
-      hostTargetStatusEl.textContent = "";
-    }
-    return true;
-  } catch {
-    try {
-      await rootEl.requestFullscreen();
-      try {
-        await globalThis.screen?.orientation?.lock?.("landscape");
-      } catch {}
-      if (!silent) {
-        hostTargetStatusEl.textContent = "";
-      }
-      return true;
-    } catch {
-      if (!silent) {
-        hostTargetStatusEl.textContent = "fullscreen unavailable";
-      }
-      return false;
-    }
-  } finally {
-    immersiveRequestInFlight = false;
-  }
-}
-
-async function requestFullscreenPlayback() {
-  await requestImmersiveViewport({ silent: false });
-}
-
-async function resyncActiveStreaming(reason = "resume") {
-  const hostTarget = getConfiguredHostTarget();
-  if (!hostTarget || streamResyncInFlight) {
-    return;
-  }
-
-  const nowMs = performance.now();
-  if ((nowMs - lastStreamResyncAt) < STREAM_RESYNC_COOLDOWN_MS) {
-    return;
-  }
-
-  streamResyncInFlight = true;
-  lastStreamResyncAt = nowMs;
-  streamState.lastError = reason === "stale" ? "resyncing stream" : "";
-  updateStreamDegradedState();
-  closeSocketAndReconnectTimer();
-  connectWS();
-
-  try {
-    await connectStreaming(hostTarget);
-  } finally {
-    streamResyncInFlight = false;
-    resetStreamDiagnostics(performance.now());
-  }
-}
-
-function clearStreamSettingsAutoSaveTimer() {
-  if (streamSettingsAutoSaveTimer !== null) {
-    window.clearTimeout(streamSettingsAutoSaveTimer);
-    streamSettingsAutoSaveTimer = null;
-  }
-}
-
-function scheduleStreamSettingsAutoSave() {
-  if (!streamSettingsStatusEl) {
-    return;
-  }
-
-  const hostTarget = resolveStreamSettingsHostTarget();
-  if (!hostTarget) {
-    streamSettingsStatusEl.textContent = "Set the host first";
-    clearStreamSettingsAutoSaveTimer();
-    return;
-  }
-
-  streamSettingsStatusEl.textContent = "stream profile queued";
-  clearStreamSettingsAutoSaveTimer();
-  streamSettingsAutoSaveTimer = window.setTimeout(() => {
-    streamSettingsAutoSaveTimer = null;
-    void saveStreamSettings(resolveStreamSettingsHostTarget());
-  }, STREAM_AUTOSAVE_DELAY_MS);
 }
 
 function getWsUrl() {
@@ -1105,39 +381,9 @@ function closeSocketAndReconnectTimer() {
 }
 
 function renderLatency(nowMs = performance.now()) {
-  if (!latencyEl || latencyEl.hidden) {
-    return;
-  }
   const displayValue = latencyTracker.getDisplayValue(nowMs);
   latencyEl.textContent = displayValue;
   latencyEl.classList.toggle("is-stale", displayValue === "--");
-}
-
-function maybeResyncStaleStream(nowMs) {
-  if (
-    !activeMediaPeer
-    || streamResyncInFlight
-    || globalThis.document?.visibilityState === "hidden"
-  ) {
-    return;
-  }
-
-  const progress = readVideoProgress(remoteVideoEl);
-  const frameAdvanced = progress.frameCount > lastStreamFrameCount;
-  const timeAdvanced = progress.currentTime > (lastStreamCurrentTime + 0.001);
-
-  if (frameAdvanced || timeAdvanced) {
-    lastStreamFrameAt = nowMs;
-  }
-
-  lastStreamFrameCount = progress.frameCount;
-  lastStreamCurrentTime = progress.currentTime;
-
-  if ((progress.frameCount === 0 && progress.currentTime === 0) || (nowMs - lastStreamFrameAt) < STREAM_STALE_FRAME_THRESHOLD_MS) {
-    return;
-  }
-
-  void resyncActiveStreaming("stale");
 }
 
 function applyResponsiveLayout() {
@@ -1179,119 +425,6 @@ function markDirty(priority = false) {
   transmitter.markDirty(priority);
 }
 
-const activeGameplayTouchIds = new Set();
-
-function extractTouchIdentifiers(event) {
-  return Array.from(event?.changedTouches ?? [], (touch) => String(touch.identifier));
-}
-
-function rememberGameplayTouches(event) {
-  const identifiers = extractTouchIdentifiers(event);
-  if (identifiers.length === 0) {
-    activeGameplayTouchIds.add("generic");
-    return;
-  }
-
-  identifiers.forEach((identifier) => {
-    activeGameplayTouchIds.add(identifier);
-  });
-}
-
-function clearGameplayTouches(event) {
-  const identifiers = extractTouchIdentifiers(event);
-  if (identifiers.length === 0) {
-    activeGameplayTouchIds.clear();
-    return;
-  }
-
-  identifiers.forEach((identifier) => {
-    activeGameplayTouchIds.delete(identifier);
-  });
-
-  if (activeGameplayTouchIds.size === 1 && activeGameplayTouchIds.has("generic")) {
-    activeGameplayTouchIds.clear();
-  }
-}
-
-function hasTrackedGameplayTouch(event) {
-  if (activeGameplayTouchIds.has("generic")) {
-    return true;
-  }
-
-  const identifiers = extractTouchIdentifiers(event);
-  if (identifiers.length === 0) {
-    return activeGameplayTouchIds.size > 0;
-  }
-
-  return identifiers.some((identifier) => activeGameplayTouchIds.has(identifier));
-}
-
-function trapGameplayTouchGesture(event, phase = "move") {
-  if (phase === "start") {
-    rememberGameplayTouches(event);
-  } else if (phase === "end") {
-    clearGameplayTouches(event);
-  }
-
-  if (event?.cancelable !== false) {
-    event.preventDefault?.();
-  }
-  event.stopPropagation?.();
-}
-
-function bindGameplayTouchShield(element) {
-  if (!element || typeof element.addEventListener !== "function") {
-    return;
-  }
-
-  element.addEventListener("touchstart", (event) => trapGameplayTouchGesture(event, "start"), { passive: false });
-  element.addEventListener("touchmove", (event) => trapGameplayTouchGesture(event, "move"), { passive: false });
-  element.addEventListener("touchend", (event) => trapGameplayTouchGesture(event, "end"), { passive: false });
-  element.addEventListener("touchcancel", (event) => trapGameplayTouchGesture(event, "end"), { passive: false });
-}
-
-function bindDocumentGameplayTouchShield(rootEl) {
-  const documentEl = globalThis.document;
-  if (!rootEl || !documentEl || typeof documentEl.addEventListener !== "function") {
-    return;
-  }
-
-  const targetIsWithinRoot = (target) => {
-    if (!target || target === rootEl) {
-      return target === rootEl;
-    }
-
-    if (typeof rootEl.contains === "function") {
-      return rootEl.contains(target);
-    }
-
-    return false;
-  };
-
-  documentEl.addEventListener("touchstart", (event) => {
-    if (!targetIsWithinRoot(event.target) && !hasTrackedGameplayTouch(event)) {
-      return;
-    }
-    trapGameplayTouchGesture(event, "start");
-  }, { capture: true, passive: false });
-
-  documentEl.addEventListener("touchmove", (event) => {
-    if (!targetIsWithinRoot(event.target) && !hasTrackedGameplayTouch(event)) {
-      return;
-    }
-    trapGameplayTouchGesture(event, "move");
-  }, { capture: true, passive: false });
-
-  ["touchend", "touchcancel"].forEach((eventName) => {
-    documentEl.addEventListener(eventName, (event) => {
-      if (!targetIsWithinRoot(event.target) && !hasTrackedGameplayTouch(event)) {
-        return;
-      }
-      trapGameplayTouchGesture(event, "end");
-    }, { capture: true, passive: false });
-  });
-}
-
 function updateButton(key, pressed, el) {
   if (state.buttons[key] === pressed) {
     return;
@@ -1309,7 +442,6 @@ function bindHoldButton(el, key) {
 
   el.addEventListener("pointerdown", (event) => {
     event.preventDefault();
-    requestImmersiveViewport();
     el.setPointerCapture(event.pointerId);
     interaction.begin();
     press();
@@ -1384,7 +516,6 @@ function bindStick(stickEl, stickKey, processor) {
 
   stickEl.addEventListener("pointerdown", (event) => {
     event.preventDefault();
-    requestImmersiveViewport();
     activePointerId = event.pointerId;
     interaction.begin();
     activeFrame = createStickFrame(
@@ -1454,7 +585,6 @@ function bindTrigger(control, triggerKey) {
 
   control.addEventListener("pointerdown", (event) => {
     event.preventDefault();
-    requestImmersiveViewport();
     activePointerId = event.pointerId;
     activeRect = control.getBoundingClientRect();
     interaction.begin();
@@ -1631,64 +761,27 @@ function maybeSendWsPing(nowMs) {
 
 function transportLoop(nowMs) {
   maybeSendWsPing(nowMs);
-  const flushTransport = transmitter.tryFlush(nowMs);
-  if (!flushTransport && activeInputChannel?.readyState !== "open" && (!ws || ws.readyState !== WebSocket.OPEN)) {
+  const sentByWs = transmitter.tryFlush(nowMs);
+  if (!sentByWs && (!ws || ws.readyState !== WebSocket.OPEN)) {
     void sendHttpFallback(nowMs);
   }
 
-  updateLocalVideoTelemetry(nowMs);
   renderLatency(nowMs);
-  void pollStreamTelemetry(nowMs);
-  maybeResyncStaleStream(nowMs);
   window.requestAnimationFrame(transportLoop);
 }
 
-const gameplayButtons = [...document.querySelectorAll("[data-btn]")];
-
-bindGameplayTouchShield(controllerEl);
-bindGameplayTouchShield(leftStickEl);
-bindGameplayTouchShield(rightStickEl);
-bindGameplayTouchShield(leftTriggerEl);
-bindGameplayTouchShield(rightTriggerEl);
-bindDocumentGameplayTouchShield(controllerEl);
-
-gameplayButtons.forEach((element) => {
-  bindGameplayTouchShield(element);
+document.querySelectorAll("[data-btn]").forEach((element) => {
   bindHoldButton(element, element.dataset.btn);
 });
 
-bindStick(leftStickEl, "left", stickProcessors.left);
-bindStick(rightStickEl, "right", stickProcessors.right);
-bindTrigger(leftTriggerEl, "lt");
-bindTrigger(rightTriggerEl, "rt");
+bindStick(document.getElementById("leftStick"), "left", stickProcessors.left);
+bindStick(document.getElementById("rightStick"), "right", stickProcessors.right);
+bindTrigger(document.getElementById("leftTrigger"), "lt");
+bindTrigger(document.getElementById("rightTrigger"), "rt");
 
 window.addEventListener("resize", requestResponsiveLayout);
 window.addEventListener("orientationchange", () => window.setTimeout(requestResponsiveLayout, 60));
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") {
-    appWasHidden = true;
-    return;
-  }
-
-  if (appWasHidden) {
-    appWasHidden = false;
-    void resyncActiveStreaming("visibility");
-  }
-});
-window.addEventListener("focus", () => {
-  if (document.visibilityState !== "hidden" && appWasHidden) {
-    appWasHidden = false;
-    void resyncActiveStreaming("focus");
-  }
-});
-window.addEventListener("pageshow", (event) => {
-  if (event?.persisted || appWasHidden) {
-    appWasHidden = false;
-    void resyncActiveStreaming("pageshow");
-  }
-});
 window.addEventListener("pagehide", () => {
-  appWasHidden = true;
   const httpUrl = getHttpUrl();
   if (!httpUrl) {
     return;
@@ -1724,11 +817,6 @@ hostDrawerBackdropEl.addEventListener("click", () => {
   renderHostDrawer();
 });
 
-hostTargetInputEl?.addEventListener("input", () => {
-  hostDrawerController.updateHostDraft(hostTargetInputEl.value);
-  renderHostDrawer();
-});
-
 stickSensitivityInputEl?.addEventListener("input", () => {
   const result = hostDrawerController.updateStickSensitivity(stickSensitivityInputEl.value);
   if (!result.ok) {
@@ -1739,39 +827,8 @@ stickSensitivityInputEl?.addEventListener("input", () => {
   renderHostDrawer();
 });
 
-controlOpacityInputEl?.addEventListener("input", () => {
-  const result = hostDrawerController.updateControlOpacity(controlOpacityInputEl.value);
-  if (!result.ok) {
-    renderHostDrawer();
-    return;
-  }
-
-  renderHostDrawer();
-});
-
-controllerVisibleInputEl?.addEventListener("input", () => {
-  const result = hostDrawerController.updateControllerVisible(controllerVisibleInputEl.checked);
-  if (!result.ok) {
-    renderHostDrawer();
-    return;
-  }
-
-  renderHostDrawer();
-});
-
-hudVisibleInputEl?.addEventListener("input", () => {
-  const result = hostDrawerController.updateHudVisible(hudVisibleInputEl.checked);
-  if (!result.ok) {
-    renderHostDrawer();
-    return;
-  }
-
-  renderHostDrawer();
-});
-
 hostTargetFormEl.addEventListener("submit", (event) => {
   event.preventDefault();
-  requestImmersiveViewport();
   const result = hostDrawerController.submit(hostTargetInputEl.value);
   if (!result.ok) {
     renderHostDrawer();
@@ -1782,42 +839,14 @@ hostTargetFormEl.addEventListener("submit", (event) => {
   renderHostDrawer("saved");
   closeSocketAndReconnectTimer();
   connectWS();
-  void loadStreamSettings(result.hostTarget);
   void connectStreaming(result.hostTarget);
-});
-
-[
-  videoWidthInputEl,
-  videoHeightInputEl,
-  videoFpsInputEl,
-  videoBitrateInputEl,
-].forEach((element) => {
-  element?.addEventListener("input", () => {
-    scheduleStreamSettingsAutoSave();
-  });
-});
-
-streamSettingsSaveEl?.addEventListener("click", () => {
-  clearStreamSettingsAutoSaveTimer();
-  void saveStreamSettings(resolveStreamSettingsHostTarget());
-});
-
-fullscreenPlaybackEl?.addEventListener("click", (event) => {
-  event.preventDefault();
-  void requestFullscreenPlayback();
 });
 
 applyResponsiveLayout();
 updateHostText();
 renderHostDrawer();
-applyStreamSettingsForm(DEFAULT_STREAM_SETTINGS);
 renderRoomState();
-if (latencyEl) {
-  latencyEl.hidden = true;
-}
-void requestImmersiveViewport();
 connectWS();
-void loadStreamSettings(hostDrawerController.hostTarget);
 void connectStreaming(hostDrawerController.hostTarget);
 renderLatency(performance.now());
 window.requestAnimationFrame(transportLoop);

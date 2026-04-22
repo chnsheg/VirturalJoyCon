@@ -151,32 +151,6 @@ class WebGamepadHub:
             return self.DEVICE_POOL_FULL
         return created
 
-    def apply_input_packet(
-        self,
-        packet: dict,
-        *,
-        peer: Tuple[str, int] = ("webrtc", 0),
-        session_key: str | None = None,
-        source: str = "webrtc",
-    ) -> dict:
-        resolved_session_key = session_key or self._session_key(peer, packet)
-        session = self._ensure_session_for_packet(
-            session_key=resolved_session_key,
-            peer=peer,
-            packet=packet,
-        )
-        if session is self.IDLE_PACKET:
-            return {"ok": True, "idle": True}
-        if session is self.DEVICE_POOL_FULL:
-            return {"ok": False, "reason": "device_pool_full"}
-
-        if not session.accepts_packet(packet):
-            return {"ok": True, "slot": session.user_index, "stale": True}
-
-        self.mapper.apply_packet(session.gamepad, packet)
-        self._log_packet(source, resolved_session_key, session.user_index, peer, packet)
-        return {"ok": True, "slot": session.user_index}
-
     async def handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=15)
         await ws.prepare(request)
@@ -262,18 +236,24 @@ class WebGamepadHub:
         else:
             peer = ("unknown", 0)
 
+        session_key = self._session_key(peer, packet)
+        session = self._ensure_session_for_packet(session_key=session_key, peer=peer, packet=packet)
+        if session is self.IDLE_PACKET:
+            return cors_json_response({"ok": True, "idle": True})
+        if session is self.DEVICE_POOL_FULL:
+            return cors_json_response({"ok": False, "reason": "device_pool_full"}, status=503)
+
+        if not session.accepts_packet(packet):
+            return cors_json_response({"ok": True, "slot": session.user_index, "stale": True})
+
         try:
-            result = self.apply_input_packet(
-                packet,
-                peer=peer,
-                session_key=self._session_key(peer, packet),
-                source="http",
-            )
+            self.mapper.apply_packet(session.gamepad, packet)
         except Exception:
             return cors_json_response({"ok": False, "reason": "bad_packet"}, status=400)
 
-        status = 503 if result.get("reason") == "device_pool_full" else 200
-        return cors_json_response(result, status=status)
+        self._log_packet("http", session_key, session.user_index, peer, packet)
+
+        return cors_json_response({"ok": True, "slot": session.user_index})
 
 
 def get_candidate_ipv4_addresses() -> List[str]:
