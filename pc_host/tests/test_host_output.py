@@ -88,6 +88,50 @@ function Out-Null {{
             result.stdout,
         )
 
+    def test_fix_network_access_streaming_mode_keeps_8889_local_only_and_opens_frontend(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "fix_network_access.ps1"
+        command = f"""
+function Set-NetConnectionProfile {{ }}
+function Get-NetIPAddress {{ @() }}
+function Get-NetTCPConnection {{ @() }}
+function netsh {{
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    "NETSH:$($Args -join ' ')"
+}}
+function Out-Null {{
+    process {{ $_ }}
+}}
+& '{script_path}' -HttpPort 8082 -FrontendPort 8090 -EnableWebRtcMedia -SkipUdp
+"""
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+        self.assertIn(
+            'NETSH:advfirewall firewall add rule name=JoyCon-Web-8082',
+            result.stdout,
+        )
+        self.assertIn(
+            'NETSH:advfirewall firewall add rule name=JoyCon-Frontend-8090',
+            result.stdout,
+        )
+        self.assertIn(
+            'NETSH:advfirewall firewall add rule name=JoyCon-WebRTC-UDP-8189',
+            result.stdout,
+        )
+        self.assertIn(
+            'NETSH:advfirewall firewall delete rule name=JoyCon-MediaMTX-WebRTC-8889',
+            result.stdout,
+        )
+        self.assertNotIn(
+            'NETSH:advfirewall firewall add rule name=JoyCon-MediaMTX-WebRTC-8889',
+            result.stdout,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -254,19 +254,22 @@ function Get-MissingFirewallRules {
 
     $expectations = @(
         "JoyCon-Web-$GatewayPort",
-        "JoyCon-MediaMTX-WebRTC-8889",
-        "JoyCon-WebRTC-UDP-8189",
-        "JoyCon-Frontend-$FrontendPort"
+        "JoyCon-Frontend-$FrontendPort",
+        "JoyCon-WebRTC-UDP-8189"
     )
 
     return @($expectations | Where-Object { -not (Test-FirewallRuleExists -DisplayName $_) })
 }
 
-function Ensure-FrontendFirewallRule {
-    param([int]$FrontendPort)
+function Get-StaleFirewallRules {
+    param([int]$LegacyUdpPort)
 
-    netsh advfirewall firewall delete rule name="JoyCon-Frontend-$FrontendPort" | Out-Null
-    netsh advfirewall firewall add rule name="JoyCon-Frontend-$FrontendPort" dir=in action=allow protocol=TCP localport=$FrontendPort profile=any | Out-Null
+    $staleRules = @(
+        ("JoyCon-MediaMTX-WebRTC-{0}" -f 8889),
+        "JoyCon-UDP-$LegacyUdpPort"
+    )
+
+    return @($staleRules | Where-Object { Test-FirewallRuleExists -DisplayName $_ })
 }
 
 function Test-IsAdministrator {
@@ -472,22 +475,29 @@ if ($python) {
 
 if (-not $SkipFirewallCheck) {
     Write-Step "[4/7] Checking firewall readiness..."
-    $missingFirewallRules = Get-MissingFirewallRules -GatewayPort $GatewayPort -FrontendPort $FrontendPort
-    if ($missingFirewallRules.Count -eq 0) {
-        Write-Ok "Firewall rules already cover gateway, WebRTC, and frontend access"
+    $missingFirewallRules = @(Get-MissingFirewallRules -GatewayPort $GatewayPort -FrontendPort $FrontendPort)
+    $staleFirewallRules = @(Get-StaleFirewallRules -LegacyUdpPort $LegacyUdpPort)
+    $needsFirewallRepair = ($missingFirewallRules.Count -gt 0) -or ($staleFirewallRules.Count -gt 0)
+    if (-not $needsFirewallRepair) {
+        Write-Ok "Firewall rules already cover frontend, gateway, and WebRTC media access"
     } elseif ($DryRun) {
-        Write-Note "Missing firewall rules in DryRun: $($missingFirewallRules -join ', ')"
+        if ($missingFirewallRules.Count -gt 0) {
+            Write-Note "Missing firewall rules in DryRun: $($missingFirewallRules -join ', ')"
+        }
+        if ($staleFirewallRules.Count -gt 0) {
+            Write-Note "Stale firewall rules to remove in DryRun: $($staleFirewallRules -join ', ')"
+        }
     } else {
         if (-not (Test-IsAdministrator)) {
-            throw "Firewall rules are missing: $($missingFirewallRules -join ', '). Re-run this script as Administrator."
+            $firewallProblems = @($missingFirewallRules + $staleFirewallRules)
+            throw "Firewall rules need repair: $($firewallProblems -join ', '). Re-run this script as Administrator."
         }
 
-        & $script:ShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script:FixNetworkAccessScript -HttpPort $GatewayPort -UdpPort $LegacyUdpPort -SkipUdp
+        & $script:ShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script:FixNetworkAccessScript -HttpPort $GatewayPort -FrontendPort $FrontendPort -UdpPort $LegacyUdpPort -EnableWebRtcMedia -SkipUdp
         if ($LASTEXITCODE -ne 0) {
             throw "fix_network_access.ps1 failed with exit code $LASTEXITCODE"
         }
 
-        Ensure-FrontendFirewallRule -FrontendPort $FrontendPort
         Write-Ok "Firewall rules repaired"
     }
 } else {

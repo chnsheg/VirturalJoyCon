@@ -285,12 +285,14 @@ class MediaStackTests(unittest.TestCase):
         media_stack_script = PROJECT_ROOT / "scripts" / "start_media_stack.ps1"
         publisher_script = PROJECT_ROOT / "scripts" / "start_stream_publisher.ps1"
         firewall_script = PROJECT_ROOT / "scripts" / "fix_network_access.ps1"
+        launcher_script = PROJECT_ROOT / "scripts" / "start_lan_streaming_web_controller.ps1"
         runtime_helper_script = PROJECT_ROOT / "scripts" / "runtime_path_helpers.ps1"
         readme_path = PROJECT_ROOT / "README.md"
 
         self.assertTrue(media_stack_script.exists(), f"Missing script: {media_stack_script}")
         self.assertTrue(publisher_script.exists(), f"Missing script: {publisher_script}")
         self.assertTrue(firewall_script.exists(), f"Missing script: {firewall_script}")
+        self.assertTrue(launcher_script.exists(), f"Missing script: {launcher_script}")
         self.assertTrue(runtime_helper_script.exists(), f"Missing script: {runtime_helper_script}")
         self.assertTrue(readme_path.exists(), f"Missing README: {readme_path}")
 
@@ -352,11 +354,23 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("libopus", publisher_text)
 
         firewall_text = firewall_script.read_text(encoding="utf-8")
-        self.assertIn("JoyCon-MediaMTX-WebRTC-8889", firewall_text)
-        self.assertIn("Protocol = 'TCP'; Port = 8889", firewall_text)
+        self.assertIn("FrontendPort", firewall_text)
+        self.assertIn("JoyCon-Frontend-$FrontendPort", firewall_text)
         self.assertIn("JoyCon-WebRTC-UDP-8189", firewall_text)
+        self.assertIn("EnableWebRtcMedia", firewall_text)
         self.assertIn("Port = 8189", firewall_text)
+        self.assertIn("delete rule name=\"JoyCon-MediaMTX-WebRTC-8889\"", firewall_text)
+        self.assertNotIn("@{ Name = \"JoyCon-MediaMTX-WebRTC-8889\"", firewall_text)
+        self.assertNotIn("Protocol = 'TCP'; Port = 8889", firewall_text)
         self.assertIn("Streaming gateway target", firewall_text)
+
+        launcher_text = launcher_script.read_text(encoding="utf-8")
+        self.assertIn("JoyCon-Frontend-$FrontendPort", launcher_text)
+        self.assertIn("JoyCon-WebRTC-UDP-8189", launcher_text)
+        self.assertIn("-FrontendPort", launcher_text)
+        self.assertIn("-EnableWebRtcMedia", launcher_text)
+        self.assertIn("Media WHEP: http://$($address.IPAddress):$GatewayPort/media/whep", launcher_text)
+        self.assertNotIn("JoyCon-MediaMTX-WebRTC-8889", launcher_text)
 
         readme_text = readme_path.read_text(encoding="utf-8")
         self.assertIn("## Streaming stack quick start", readme_text)
@@ -366,7 +380,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("winget install", readme_text)
         self.assertIn("virtual-audio-capturer", readme_text)
         self.assertIn("DirectShow", readme_text)
-        self.assertIn("RTSP ingest", readme_text)
+        self.assertIn("RTSP/TCP ingest", readme_text)
         self.assertIn("rtsp://127.0.0.1:8554/game", readme_text)
         self.assertIn("webrtcAdditionalHosts", readme_text)
         self.assertIn("192.168.0.119", readme_text)
@@ -374,7 +388,10 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("NVIDIA NVENC", readme_text)
         self.assertIn("-VideoEncoder libx264", readme_text)
         self.assertIn("-VideoDevice gdigrab", readme_text)
-        self.assertIn("http://192.168.0.119:8889/game/whep", readme_text)
+        self.assertIn("http://192.168.0.119:8090", readme_text)
+        self.assertIn("192.168.0.119:8082", readme_text)
+        self.assertIn("http://192.168.0.119:8082/media/whep", readme_text)
+        self.assertIn("8889/TCP stays local", readme_text)
         self.assertIn("WHEP", readme_text)
         self.assertIn("subscribe", readme_text)
         self.assertIn("python stream_gateway.py --host 0.0.0.0 --port 8082", readme_text)

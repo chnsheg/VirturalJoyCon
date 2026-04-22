@@ -5,7 +5,7 @@
 For the current streaming build, start the project from `pc_host` in this order:
 
 1. Install Python and runtime dependencies once.
-2. Open the Windows firewall for the stream gateway and WebRTC ports when a phone or another PC must connect over LAN.
+2. Open the Windows firewall only for the LAN-facing ports the phone actually needs: `8090/TCP`, `8082/TCP`, and `8189/UDP`.
 3. Start `stream_gateway.py` on `8082/TCP`.
 4. Start MediaMTX with `pwsh .\scripts\start_media_stack.ps1`.
 5. Start FFmpeg publishing with `pwsh .\scripts\start_stream_publisher.ps1`.
@@ -15,7 +15,7 @@ Keep these three long-running processes open while testing: the Python stream ga
 
 ## Streaming stack quick start
 
-Use this flow for the shared browser video/audio stream plus WebRTC control gateway. It adds `8082/TCP` for the stream gateway, `8889/TCP` for MediaMTX WebRTC HTTP, and `8189/UDP` for WebRTC media.
+Use this flow for the shared browser video/audio stream plus WebRTC control gateway. The phone only needs `8090/TCP` for the static frontend, `8082/TCP` for the gateway and proxied media entrypoint, plus `8189/UDP` for WebRTC media. `8889/TCP stays local` on the host and does not need a Windows firewall rule.
 The stable Windows path is FFmpeg low-latency encoding into local RTSP/TCP ingest (`rtsp://127.0.0.1:8554/game`), then MediaMTX WHEP/WebRTC playback in the browser.
 Run every PowerShell command in this section with PowerShell 7 via `pwsh`, not Windows PowerShell 5.1.
 
@@ -61,10 +61,10 @@ Run inside `pc_host` from an elevated PowerShell 7 session:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8082 -SkipUdp
+pwsh .\scripts\fix_network_access.ps1 -HttpPort 8082 -FrontendPort 8090 -EnableWebRtcMedia -SkipUdp
 ```
 
-The helper keeps the standalone TCP rule behavior and also opens `8889/TCP` for MediaMTX plus `8189/UDP` for WebRTC.
+The helper opens only the LAN-facing ports: `8090/TCP`, `8082/TCP`, and `8189/UDP`. MediaMTX still listens locally on `8889/TCP`, but `8889/TCP stays local` and is not opened to the LAN.
 
 ### 3. Start the control gateway
 
@@ -125,15 +125,34 @@ pwsh .\scripts\start_stream_publisher.ps1 -PublishTransport rtsp_udp
 
 ### 6. Open the frontend and connect
 
-Host `pc_host\web` with any static HTTP server, then connect the page to `LAN_IP:8082`.
+Host `pc_host\web` with any static HTTP server, open the page from the phone, then connect the drawer to `LAN_IP:8082`.
 
-For media playback, the browser or other client should subscribe to the WHEP endpoint on MediaMTX:
+Example:
 
-```text
-http://192.168.0.119:8889/game/whep
+```bash
+cd web
+python -m http.server 8090 --bind 0.0.0.0
 ```
 
-Replace `192.168.0.119` with this host's reachable LAN IP. If your client does not subscribe to `http://<LAN_IP>:8889/game/whep`, it will not receive the published stream even if the WHIP publisher is running.
+Open the frontend on the phone:
+
+```text
+http://192.168.0.119:8090
+```
+
+Enter this host target in the drawer:
+
+```text
+192.168.0.119:8082
+```
+
+For media playback, the browser or other client should subscribe through the gateway WHEP endpoint:
+
+```text
+http://192.168.0.119:8082/media/whep
+```
+
+Replace `192.168.0.119` with this host's reachable LAN IP. If a remote browser does not subscribe to `http://<LAN_IP>:8082/media/whep`, it will not receive the published stream even if the publisher is running.
 
 ## Standalone web controller quick start
 
