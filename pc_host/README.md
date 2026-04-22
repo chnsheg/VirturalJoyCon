@@ -40,6 +40,8 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1
 
 这个脚本会检查运行环境、安装 Python 依赖、检查防火墙、启动控制网关、启动 MediaMTX、启动 FFmpeg 推流器，并启动静态网页服务器。
 
+重复执行一键启动脚本时，它会先停止自己这套栈上一次留下的旧进程，再重新启动；如果你不想自动重启旧进程，可以加 `-NoRestartExisting`。
+
 如果只想预览启动流程，不真正启动服务：
 
 ```powershell

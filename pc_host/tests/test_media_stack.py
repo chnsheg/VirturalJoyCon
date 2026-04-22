@@ -372,6 +372,14 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("JoyCon-WebRTC-UDP-8189", launcher_text)
         self.assertIn("-HttpPort $GatewayPort", launcher_text)
         self.assertIn("-HttpPort $FrontendPort", launcher_text)
+        self.assertIn("NoRestartExisting", launcher_text)
+        self.assertIn("Get-ExistingManagedStackProcesses", launcher_text)
+        self.assertIn("Stop-ExistingManagedStackProcesses", launcher_text)
+        self.assertIn("Stop-Process -Id", launcher_text)
+        self.assertIn("stream_gateway.py", launcher_text)
+        self.assertIn("http.server", launcher_text)
+        self.assertIn("start_media_stack.ps1", launcher_text)
+        self.assertIn("start_stream_publisher.ps1", launcher_text)
         self.assertNotIn("WebRtcControlProgram", launcher_text)
         self.assertNotIn("49152-65535", launcher_text)
         self.assertIn("Media WHEP: http://$($address.IPAddress):8889/game/whep", launcher_text)
@@ -411,6 +419,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("防火墙", readme_text)
         self.assertIn("管理员", readme_text)
         self.assertIn("2026-04-22 16:46", readme_text)
+        self.assertIn("重复执行一键启动脚本时", readme_text)
         self.assertNotIn("## Streaming stack quick start", readme_text)
 
     def test_publisher_runtime_profile_is_not_locked_by_launch_time_dimensions(self) -> None:

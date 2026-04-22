@@ -18,6 +18,7 @@ param(
     [string]$VideoDevice = "gfxcapture",
     [string]$VideoEncoder = "h264_nvenc",
     [string]$AudioDevice = "",
+    [switch]$NoRestartExisting,
     [switch]$SkipDependencyInstall,
     [switch]$SkipFirewallCheck,
     [switch]$DryRun
@@ -312,6 +313,140 @@ function Test-UdpEndpointPresent {
     }
 }
 
+function Test-CommandLineContains {
+    param(
+        [string]$CommandLine,
+        [string[]]$Needles
+    )
+
+    if (-not $CommandLine) {
+        return $false
+    }
+
+    foreach ($needle in $Needles) {
+        if (-not $needle) {
+            continue
+        }
+
+        if ($CommandLine.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Get-ExistingManagedStackProcesses {
+    param(
+        [int]$GatewayPort,
+        [int]$FrontendPort
+    )
+
+    try {
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    } catch {
+        return @()
+    }
+
+    $markerSets = @(
+        @("stream_gateway.py", "--port", "$GatewayPort"),
+        @("http.server", "$FrontendPort"),
+        @("start_media_stack.ps1"),
+        @("start_stream_publisher.ps1"),
+        @("$script:MediaMtxConfigPath")
+    )
+
+    $matches = @()
+    foreach ($process in $processes) {
+        if ($process.ProcessId -eq $PID) {
+            continue
+        }
+
+        $commandLine = [string]$process.CommandLine
+        if (-not $commandLine) {
+            continue
+        }
+
+        foreach ($markerSet in $markerSets) {
+            if (Test-CommandLineContains -CommandLine $commandLine -Needles $markerSet) {
+                $matches += $process
+                break
+            }
+        }
+    }
+
+    return @($matches | Sort-Object ProcessId -Unique)
+}
+
+function Get-BusyRequiredPorts {
+    param([object[]]$RequiredPorts)
+
+    $busyPorts = @()
+    foreach ($requiredPort in $RequiredPorts) {
+        $inUse = if ($requiredPort.Protocol -eq "UDP") {
+            Test-UdpEndpointPresent -Port $requiredPort.Port
+        } else {
+            Test-TcpListenerPresent -Port $requiredPort.Port
+        }
+
+        if ($inUse) {
+            $busyPorts += "$($requiredPort.Name) ($($requiredPort.Port)/$($requiredPort.Protocol))"
+        }
+    }
+
+    return @($busyPorts)
+}
+
+function Wait-RequiredPortsToFree {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$RequiredPorts,
+        [int]$TimeoutSeconds = 12
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $busyPorts = @(Get-BusyRequiredPorts -RequiredPorts $RequiredPorts)
+        if ($busyPorts.Count -eq 0) {
+            return
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    $remainingBusyPorts = @(Get-BusyRequiredPorts -RequiredPorts $RequiredPorts)
+    if ($remainingBusyPorts.Count -gt 0) {
+        throw "Managed stack ports did not free in time: $($remainingBusyPorts -join ', ')"
+    }
+}
+
+function Stop-ExistingManagedStackProcesses {
+    param(
+        [int]$GatewayPort,
+        [int]$FrontendPort,
+        [Parameter(Mandatory = $true)][object[]]$RequiredPorts
+    )
+
+    $existingProcesses = @(Get-ExistingManagedStackProcesses -GatewayPort $GatewayPort -FrontendPort $FrontendPort)
+    if ($existingProcesses.Count -eq 0) {
+        Write-Ok "No existing managed stack processes detected"
+        return
+    }
+
+    $processSummary = @($existingProcesses | ForEach-Object { "$($_.Name)#$($_.ProcessId)" })
+    if ($DryRun) {
+        Write-Note "Would stop existing managed stack processes in DryRun: $($processSummary -join ', ')"
+        return
+    }
+
+    foreach ($process in $existingProcesses) {
+        Write-Note "Stopping existing managed process: $($process.Name)#$($process.ProcessId)"
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+
+    Wait-RequiredPortsToFree -RequiredPorts $RequiredPorts
+    Write-Ok "Existing managed stack processes stopped"
+}
+
 function Assert-PortIsFree {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -415,7 +550,7 @@ function Start-WindowedScript {
     return Start-Process -FilePath $script:ShellExecutable -ArgumentList $argumentList -WorkingDirectory $WorkingDirectory -PassThru
 }
 
-Write-Step "[1/7] Checking runtime prerequisites..."
+Write-Step "[1/8] Checking runtime prerequisites..."
 if (-not $IsWindows) {
     throw "This script only supports Windows."
 }
@@ -463,17 +598,17 @@ if (-not (Test-MediaMtxConfigLooksSafe -ConfigPath $script:MediaMtxConfigPath)) 
 }
 
 if (-not $SkipDependencyInstall) {
-    Write-Step "[2/7] Installing Python dependencies..."
+    Write-Step "[2/8] Installing Python dependencies..."
     if ($DryRun) {
         Write-Host "Would run: $(Format-CommandLine -FilePath $python.FilePath -Arguments @($python.PrefixArgs + @('-m', 'pip', 'install', '-r', $script:RequirementsPath)))" -ForegroundColor DarkGray
     } else {
         Invoke-Python -Python $python -Arguments @("-m", "pip", "install", "-r", $script:RequirementsPath)
     }
 } else {
-    Write-Step "[2/7] Skipping Python dependency install by request..."
+    Write-Step "[2/8] Skipping Python dependency install by request..."
 }
 
-Write-Step "[3/7] Verifying required Python modules..."
+Write-Step "[3/8] Verifying required Python modules..."
 if ($python) {
     $missingImports = Test-PythonImports -Python $python -Modules $script:RequiredImports
     if ($missingImports.Count -eq 0) {
@@ -488,7 +623,7 @@ if ($python) {
 }
 
 if (-not $SkipFirewallCheck) {
-    Write-Step "[4/7] Checking firewall readiness..."
+    Write-Step "[4/8] Checking firewall readiness..."
     $missingFirewallRules = @(Get-MissingFirewallRules -GatewayPort $GatewayPort -FrontendPort $FrontendPort)
     $staleFirewallRules = @(Get-StaleFirewallRules -LegacyUdpPort $LegacyUdpPort -FrontendPort $FrontendPort)
     $needsFirewallRepair = ($missingFirewallRules.Count -gt 0) -or ($staleFirewallRules.Count -gt 0)
@@ -523,10 +658,9 @@ if (-not $SkipFirewallCheck) {
         Write-Ok "Firewall rules repaired"
     }
 } else {
-    Write-Step "[4/7] Skipping firewall checks by request..."
+    Write-Step "[4/8] Skipping firewall checks by request..."
 }
 
-Write-Step "[5/7] Checking required ports are free..."
 $requiredPorts = @(
     @{ Name = "stream gateway"; Protocol = "TCP"; Port = $GatewayPort },
     @{ Name = "frontend static server"; Protocol = "TCP"; Port = $FrontendPort },
@@ -536,6 +670,14 @@ $requiredPorts = @(
     @{ Name = "MediaMTX WebRTC media"; Protocol = "UDP"; Port = 8189 }
 )
 
+if (-not $NoRestartExisting) {
+    Write-Step "[5/8] Releasing existing managed stack processes..."
+    Stop-ExistingManagedStackProcesses -GatewayPort $GatewayPort -FrontendPort $FrontendPort -RequiredPorts $requiredPorts
+} else {
+    Write-Step "[5/8] Skipping existing process cleanup by request..."
+}
+
+Write-Step "[6/8] Checking required ports are free..."
 $allPortsFree = $true
 foreach ($requiredPort in $requiredPorts) {
     if (-not (Assert-PortIsFree -Name $requiredPort.Name -Protocol $requiredPort.Protocol -Port $requiredPort.Port)) {
@@ -548,7 +690,7 @@ if ($allPortsFree) {
     Write-Note "Port check completed with active listeners in DryRun."
 }
 
-Write-Step "[6/7] Preparing launch commands..."
+Write-Step "[7/8] Preparing launch commands..."
 $pythonExeForLaunch = if ($python) { $python.FilePath } else { "python" }
 $pythonPrefixArgs = if ($python) { @($python.PrefixArgs) } else { @() }
 $mediaMtxExeForLaunch = if ($mediaMtx.Found) { $mediaMtx.Path } else { $MediaMtxExe }
@@ -595,10 +737,10 @@ $publisherProcess = Start-WindowedScript -Name "stream publisher" -WorkingDirect
 $frontendProcess = Start-WindowedCommand -Name "frontend static server" -WorkingDirectory (Join-Path $script:PcHostDir "web") -CommandText $frontendCommand
 
 if ($DryRun) {
-    Write-Step "[7/7] DryRun summary..."
+    Write-Step "[8/8] DryRun summary..."
     Write-Ok "DryRun complete. No firewall rules were changed and no services were started."
 } else {
-    Write-Step "[7/7] Waiting for services to listen..."
+    Write-Step "[8/8] Waiting for services to listen..."
     Start-Sleep -Seconds 4
 
     $expectedListeners = @(
