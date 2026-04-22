@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   CONTROL_CHANNEL_LABEL,
+  INPUT_CHANNEL_LABEL,
   createControlChannelOptions,
   createControlOfferPayload,
   createInputChannelOptions,
@@ -96,8 +97,20 @@ test("negotiateControlPeer uses the supported control channel contract", async (
   });
 
   assert.equal(result.peer, peer);
-  assert.equal(result.channel.label, CONTROL_CHANNEL_LABEL);
-  assert.deepEqual(result.channel.options, { ordered: true });
+  assert.equal(result.controlChannel.label, CONTROL_CHANNEL_LABEL);
+  assert.deepEqual(result.controlChannel.options, { ordered: true });
+  assert.equal(result.inputChannel.label, INPUT_CHANNEL_LABEL);
+  assert.deepEqual(result.inputChannel.options, { ordered: false, maxRetransmits: 0 });
+  assert.deepEqual(
+    peer.channels.map((channel) => ({
+      label: channel.label,
+      options: channel.options,
+    })),
+    [
+      { label: CONTROL_CHANNEL_LABEL, options: { ordered: true } },
+      { label: INPUT_CHANNEL_LABEL, options: { ordered: false, maxRetransmits: 0 } },
+    ],
+  );
   assert.equal(fetchCalls[0].url, "http://192.168.0.10:8082/api/control/offer");
   assert.deepEqual(JSON.parse(fetchCalls[0].init.body), {
     room_id: "living-room",

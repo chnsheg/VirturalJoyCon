@@ -93,7 +93,8 @@ export async function negotiateControlPeer({
   peerFactory = () => new globalThis.RTCPeerConnection(),
 }) {
   const peer = peerFactory();
-  const channel = peer.createDataChannel(CONTROL_CHANNEL_LABEL, createControlChannelOptions());
+  const controlChannel = peer.createDataChannel(CONTROL_CHANNEL_LABEL, createControlChannelOptions());
+  const inputChannel = peer.createDataChannel(INPUT_CHANNEL_LABEL, createInputChannelOptions());
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
   await waitForIceGatheringComplete(peer);
@@ -116,5 +117,5 @@ export async function negotiateControlPeer({
   );
 
   await peer.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
-  return { peer, channel };
+  return { peer, controlChannel, inputChannel };
 }

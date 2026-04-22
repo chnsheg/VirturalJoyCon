@@ -9,6 +9,7 @@ const DEFAULT_STICK_CONFIG = Object.freeze({
 });
 
 const SOCKET_OPEN = 1;
+const DATA_CHANNEL_OPEN = "open";
 
 export function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -182,7 +183,7 @@ export class AdaptiveStickProcessor {
   sampleVector({ x, y, now }) {
     const raw = normalizeVector({ x, y });
     const filtered = this.filter.filter(raw, now);
-    const state = applyRadialResponse(filtered, this.config);
+    const state = applyRadialResponse(raw, this.config);
     return {
       raw,
       filtered: {
@@ -343,16 +344,20 @@ export class LayoutGestureLease {
 export class LatestStateTransmitter {
   constructor({
     getSocket,
+    getDataChannel,
     readState,
     minIntervalMs = 8,
     heartbeatMs = 250,
     maxBufferedAmount = 32768,
+    maxDataChannelBufferedAmount = 2048,
   }) {
     this.getSocket = getSocket;
+    this.getDataChannel = getDataChannel;
     this.readState = readState;
     this.minIntervalMs = minIntervalMs;
     this.heartbeatMs = heartbeatMs;
     this.maxBufferedAmount = maxBufferedAmount;
+    this.maxDataChannelBufferedAmount = maxDataChannelBufferedAmount;
     this.sequence = 0;
     this.lastSendAt = -Infinity;
     this.lastSerialized = "";
@@ -397,6 +402,22 @@ export class LatestStateTransmitter {
   }
 
   tryFlush(nowMs) {
+    const dataChannel = this.getDataChannel?.();
+    if (dataChannel && dataChannel.readyState === DATA_CHANNEL_OPEN) {
+      if ((dataChannel.bufferedAmount ?? 0) > this.maxDataChannelBufferedAmount) {
+        return false;
+      }
+
+      const payload = this.createPayload(nowMs);
+      if (!payload) {
+        return false;
+      }
+
+      dataChannel.send(payload.serialized);
+      this.commit(payload, nowMs);
+      return "datachannel";
+    }
+
     const socket = this.getSocket?.();
     if (!socket || socket.readyState !== SOCKET_OPEN) {
       return false;
@@ -413,6 +434,6 @@ export class LatestStateTransmitter {
 
     socket.send(payload.serialized);
     this.commit(payload, nowMs);
-    return true;
+    return "ws";
   }
 }

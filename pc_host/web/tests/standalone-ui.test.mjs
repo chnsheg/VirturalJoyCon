@@ -6,6 +6,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+function extractCssRule(css, selectorPattern) {
+  const match = css.match(new RegExp(`${selectorPattern}\\s*\\{([\\s\\S]*?)\\}`, "m"));
+  assert.ok(match, `missing css rule for ${selectorPattern}`);
+  return match[1];
+}
+
+function extractCssPixelVar(css, name) {
+  const match = css.match(new RegExp(`${name}:\\s*(\\d+)px;`));
+  assert.ok(match, `missing css pixel var ${name}`);
+  return Number(match[1]);
+}
+
 function createStorage(seed = {}) {
   const data = new Map(Object.entries(seed));
   return {
@@ -45,6 +57,10 @@ class MockClassList {
   contains(name) {
     return this.values.has(name);
   }
+
+  remove(name) {
+    this.values.delete(name);
+  }
 }
 
 class MockElement {
@@ -63,7 +79,10 @@ class MockElement {
     this.listeners = new Map();
     this.hidden = false;
     this.textContent = "";
+    this._innerHTML = "";
+    this.innerHTMLUpdates = 0;
     this.value = "";
+    this.checked = false;
     this.attributes = new Map();
   }
 
@@ -108,6 +127,41 @@ class MockElement {
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
   }
+
+  get innerHTML() {
+    return this._innerHTML;
+  }
+
+  set innerHTML(value) {
+    this._innerHTML = String(value);
+    this.innerHTMLUpdates += 1;
+    this.textContent = this._innerHTML.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+}
+
+function createMockCanvasElement() {
+  const element = new MockElement({ width: 1280, height: 720 });
+  element.width = 1280;
+  element.height = 720;
+  element.drawCalls = [];
+  element.getContext = (type) => {
+    if (type !== "2d") {
+      return null;
+    }
+
+    return {
+      filter: "none",
+      clearRect() {},
+      drawImage(...args) {
+        element.drawCalls.push(args);
+      },
+      save() {},
+      restore() {},
+      setTransform() {},
+      fillRect() {},
+    };
+  };
+  return element;
 }
 
 class MockWebSocket {
@@ -153,10 +207,14 @@ class MockWebSocket {
 function installAppHarness({
   savedHostTarget,
   savedStickSensitivity,
+  savedControlOpacity,
+  savedControllerVisible,
+  savedHudVisible,
   savedReconnectToken,
   fakeLocationHost = "example.invalid",
   enableRtc = false,
   fetchImpl = null,
+  rtcGetStatsImpl = null,
 }) {
   const originalGlobals = new Map();
   for (const key of [
@@ -167,6 +225,7 @@ function installAppHarness({
     "WebSocket",
     "RTCPeerConnection",
     "location",
+    "screen",
   ]) {
     originalGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   }
@@ -183,10 +242,43 @@ function installAppHarness({
   const hostTargetStatusEl = new MockElement();
   const stickSensitivityInputEl = new MockElement();
   const stickSensitivityValueEl = new MockElement();
+  const controlOpacityInputEl = new MockElement();
+  const controlOpacityValueEl = new MockElement();
+  const controllerVisibleInputEl = new MockElement();
+  const hudVisibleInputEl = new MockElement();
   const remoteVideoEl = new MockElement();
   remoteVideoEl.play = async () => undefined;
+  remoteVideoEl.readyState = 4;
+  remoteVideoEl.videoWidth = 1920;
+  remoteVideoEl.videoHeight = 1080;
+  remoteVideoEl.currentTime = 0;
+  let playbackFrameCount = 0;
+  remoteVideoEl.getVideoPlaybackQuality = () => {
+    playbackFrameCount += 60;
+    remoteVideoEl.currentTime += 1;
+    return { totalVideoFrames: playbackFrameCount };
+  };
+  remoteVideoEl.requestVideoFrameCallback = (callback) => {
+    videoFrameCallbacks.push(callback);
+    return videoFrameCallbacks.length;
+  };
+  remoteVideoEl.cancelVideoFrameCallback = (handle) => {
+    if (handle > 0 && handle <= videoFrameCallbacks.length) {
+      videoFrameCallbacks[handle - 1] = null;
+    }
+  };
+  const streamBackdropCanvasEl = createMockCanvasElement();
+  const streamCanvasEl = createMockCanvasElement();
   const roomStatusEl = new MockElement();
   const transportModeEl = new MockElement();
+  const streamTelemetryEl = new MockElement();
+  const fullscreenPlaybackEl = new MockElement();
+  const videoWidthInputEl = new MockElement();
+  const videoHeightInputEl = new MockElement();
+  const videoFpsInputEl = new MockElement();
+  const videoBitrateInputEl = new MockElement();
+  const streamSettingsSaveEl = new MockElement();
+  const streamSettingsStatusEl = new MockElement();
   const controllerEl = new MockElement();
   const leftTriggerEl = new MockElement();
   const rightTriggerEl = new MockElement();
@@ -226,9 +318,23 @@ function installAppHarness({
     ["hostTargetStatus", hostTargetStatusEl],
     ["stickSensitivityInput", stickSensitivityInputEl],
     ["stickSensitivityValue", stickSensitivityValueEl],
+    ["controlOpacityInput", controlOpacityInputEl],
+    ["controlOpacityValue", controlOpacityValueEl],
+    ["controllerVisibleInput", controllerVisibleInputEl],
+    ["hudVisibleInput", hudVisibleInputEl],
     ["remoteVideo", remoteVideoEl],
+    ["streamBackdropCanvas", streamBackdropCanvasEl],
+    ["streamCanvas", streamCanvasEl],
     ["roomStatus", roomStatusEl],
     ["transportMode", transportModeEl],
+    ["streamTelemetry", streamTelemetryEl],
+    ["fullscreenPlayback", fullscreenPlaybackEl],
+    ["videoWidthInput", videoWidthInputEl],
+    ["videoHeightInput", videoHeightInputEl],
+    ["videoFpsInput", videoFpsInputEl],
+    ["videoBitrateInput", videoBitrateInputEl],
+    ["streamSettingsSave", streamSettingsSaveEl],
+    ["streamSettingsStatus", streamSettingsStatusEl],
     ["leftTrigger", leftTriggerEl],
     ["rightTrigger", rightTriggerEl],
     ["leftStick", leftStickEl],
@@ -240,6 +346,10 @@ function installAppHarness({
   const webSockets = [];
   const fetchCalls = [];
   const animationFrameCallbacks = [];
+  const videoFrameCallbacks = [];
+  const fullscreenRequests = [];
+  const orientationLocks = [];
+  const frameTimeOrigin = performance.now();
 
   function defaultFetch(url, init = {}) {
     if (String(url).includes("/api/room/join")) {
@@ -270,6 +380,22 @@ function installAppHarness({
       };
     }
 
+    if (String(url).includes("/api/stream/settings")) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            ok: true,
+            width: 1280,
+            height: 720,
+            fps: 60,
+            bitrateKbps: 6000,
+            applied: false,
+          };
+        },
+      };
+    }
+
     return {
       ok: true,
       async json() {
@@ -282,6 +408,9 @@ function installAppHarness({
   }
 
   const document = {
+    listeners: new Map(),
+    visibilityState: "visible",
+    fullscreenElement: null,
     body: {
       classList: new MockClassList(),
       dataset: {},
@@ -293,9 +422,27 @@ function installAppHarness({
           this.values.set(name, value);
         },
       },
+      async requestFullscreen(options) {
+        fullscreenRequests.push(options ?? {});
+        document.fullscreenElement = document.documentElement;
+      },
     },
     getElementById(id) {
       return idMap.get(id) ?? null;
+    },
+    addEventListener(type, listener) {
+      const existing = this.listeners.get(type) ?? [];
+      existing.push(listener);
+      this.listeners.set(type, existing);
+    },
+    dispatch(type, event = {}) {
+      for (const listener of this.listeners.get(type) ?? []) {
+        listener({
+          preventDefault() {},
+          stopPropagation() {},
+          ...event,
+        });
+      }
     },
     querySelector(selector) {
       if (selector === ".controller") {
@@ -324,6 +471,9 @@ function installAppHarness({
     localStorage: createStorage({
       joycon_host_target: savedHostTarget,
       joycon_stick_sensitivity: savedStickSensitivity,
+      joycon_control_opacity: savedControlOpacity,
+      joycon_controller_visible: savedControllerVisible,
+      joycon_hud_visible: savedHudVisible,
       joycon_stream_reconnect_token: savedReconnectToken,
     }),
     sessionStorage: createStorage(),
@@ -341,6 +491,15 @@ function installAppHarness({
       windowListeners.set(type, existing);
     },
     removeEventListener() {},
+    dispatch(type, event = {}) {
+      for (const listener of windowListeners.get(type) ?? []) {
+        listener({
+          preventDefault() {},
+          stopPropagation() {},
+          ...event,
+        });
+      }
+    },
     setTimeout(callback, delay) {
       const id = nextTimerId++;
       timers.set(id, { callback, delay, cleared: false });
@@ -381,6 +540,20 @@ function installAppHarness({
       const channel = {
         label,
         options,
+        readyState: "open",
+        bufferedAmount: 0,
+        listeners: new Map(),
+        addEventListener(type, listener) {
+          const existing = this.listeners.get(type) ?? [];
+          existing.push(listener);
+          this.listeners.set(type, existing);
+        },
+        dispatch(type, event = {}) {
+          for (const listener of this.listeners.get(type) ?? []) {
+            listener(event);
+          }
+        },
+        send() {},
         close() {},
       };
       this.channels.push(channel);
@@ -397,6 +570,27 @@ function installAppHarness({
 
     async setRemoteDescription(description) {
       this.remoteDescription = description;
+    }
+
+    async getStats() {
+      if (typeof rtcGetStatsImpl === "function") {
+        return rtcGetStatsImpl.call(this);
+      }
+      this.statsSampleIndex = (this.statsSampleIndex ?? 0) + 1;
+      const index = this.statsSampleIndex;
+      return new Map([
+        [
+          "video-inbound",
+          {
+            type: "inbound-rtp",
+            kind: "video",
+            framesDecoded: 60 * index,
+            bytesReceived: 900000 * index,
+            packetsReceived: 1000 * index,
+            packetsLost: 4 * index,
+          },
+        ],
+      ]);
     }
 
     close() {}
@@ -444,23 +638,69 @@ function installAppHarness({
     writable: true,
     value: location,
   });
+  Object.defineProperty(globalThis, "screen", {
+    configurable: true,
+    writable: true,
+    value: {
+      orientation: {
+        async lock(orientation) {
+          orientationLocks.push(orientation);
+        },
+      },
+    },
+  });
 
   return {
     connEl,
     slotEl,
+    hostDrawerHandleEl,
+    hostDrawerBackdropEl,
     hostTargetFormEl,
     hostTargetInputEl,
+    streamSettingsSaveEl,
+    streamSettingsStatusEl,
+    videoWidthInputEl,
+    videoHeightInputEl,
+    videoFpsInputEl,
+    videoBitrateInputEl,
+    streamTelemetryEl,
+    fullscreenPlaybackEl,
+    buttonElements,
+    leftTriggerEl,
+    leftStickEl,
     stickSensitivityInputEl,
     stickSensitivityValueEl,
+    controlOpacityInputEl,
+    controlOpacityValueEl,
+    controllerVisibleInputEl,
+    hudVisibleInputEl,
+    controllerEl,
     timers,
     webSockets,
     fetchCalls,
+    fullscreenRequests,
+    orientationLocks,
     roomStatusEl,
     transportModeEl,
+    rootStyle: document.documentElement.style,
+    latencyEl,
     storage: window.localStorage,
+    setVisibility(value) {
+      document.visibilityState = value;
+      document.dispatch("visibilitychange");
+    },
+    dispatchWindow(type, event = {}) {
+      window.dispatch(type, event);
+    },
     runAnimationFrame(nowMs = 0) {
-      const callback = animationFrameCallbacks.shift();
-      callback?.(nowMs);
+      const resolvedNowMs = frameTimeOrigin + nowMs;
+      const animationFrameCallback = animationFrameCallbacks.shift();
+      animationFrameCallback?.(resolvedNowMs);
+      const videoFrameCallback = videoFrameCallbacks.shift();
+      videoFrameCallback?.(resolvedNowMs, { width: 1920, height: 1080 });
+    },
+    dispatchDocument(type, event = {}) {
+      document.dispatch(type, event);
     },
     async settle() {
       for (let index = 0; index < 20; index += 1) {
@@ -490,6 +730,10 @@ test("index.html exposes the host drawer controls", async () => {
   assert.match(html, /id="hostTargetStatus"/);
   assert.match(html, /id="stickSensitivityInput"/);
   assert.match(html, /id="stickSensitivityValue"/);
+  assert.match(html, /id="controlOpacityInput"/);
+  assert.match(html, /id="controlOpacityValue"/);
+  assert.match(html, /id="controllerVisibleInput"/);
+  assert.match(html, /id="hudVisibleInput"/);
 });
 
 test("index.html keeps the host input in text entry mode", async () => {
@@ -518,11 +762,134 @@ test("styles.css defines the drawer sensitivity hooks", async () => {
   assert.match(css, /\.host-drawer-value/);
 });
 
+test("styles.css defines the drawer visibility toggle hooks", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.match(css, /\.host-drawer-toggle-row/);
+  assert.match(css, /\.host-drawer-toggle-input/);
+  assert.match(css, /\.host-drawer-toggle-input::after/);
+});
+
+test("styles.css centers telemetry as a compact single-line hud and hides the redundant bottom-right latency pill", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.match(css, /\.stream-telemetry-line/);
+  assert.match(css, /\.stream-telemetry-segment/);
+  assert.match(css, /\.stream-telemetry-separator/);
+  assert.match(css, /\.stream-telemetry\s*\{[\s\S]*left:\s*50%;/);
+  assert.match(css, /\.stream-telemetry\s*\{[\s\S]*transform:\s*translateX\(-50%\);/);
+  assert.match(css, /\.stream-telemetry\s*\{[\s\S]*white-space:\s*nowrap;/);
+  assert.match(css, /\.stream-telemetry-value/);
+  assert.match(css, /\.latency\s*\{[\s\S]*display:\s*none;/);
+});
+
+test("styles.css shifts the top button groups downward and hides the redundant top-right transport pill", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.ok(extractCssPixelVar(css, "--upper-cluster-offset") >= 42);
+  assert.match(css, /\.dpad-cluster\s*\{[\s\S]*transform:\s*translateY\(var\(--upper-cluster-offset\)\);/);
+  assert.match(css, /\.abxy-cluster\s*\{[\s\S]*transform:\s*translateY\(var\(--upper-cluster-offset\)\);/);
+  assert.match(css, /\.aux-left\s*\{[\s\S]*transform:\s*translateY\(var\(--upper-cluster-offset\)\);/);
+  assert.match(css, /\.aux-right\s*\{[\s\S]*transform:\s*translateY\(var\(--upper-cluster-offset\)\);/);
+  assert.match(
+    extractCssRule(css, String.raw`\.controller\[data-layout="compact"\]`),
+    /--upper-cluster-offset:\s*(3\d|[4-9]\d)px;/,
+  );
+  assert.match(css, /\.transport-mode\s*\{[\s\S]*display:\s*none;/);
+});
+
+test("styles.css moves both stick shells inward and exposes a dedicated center inset variable", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.ok(extractCssPixelVar(css, "--stick-center-inset") >= 24);
+  assert.match(css, /\.left-stick-shell\s*\{[\s\S]*transform:\s*translateX\(var\(--stick-center-inset\)\);/);
+  assert.match(css, /\.right-stick-shell\s*\{[\s\S]*transform:\s*translateX\(calc\(var\(--stick-center-inset\) \* -1\)\);/);
+  assert.match(
+    extractCssRule(css, String.raw`\.controller\[data-layout="compact"\]`),
+    /--stick-center-inset:\s*(1[89]|[2-9]\d)px;/,
+  );
+});
+
+test("styles.css keeps the settings drawer scrollable on short landscape screens", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.match(css, /\.host-drawer\s*\{[\s\S]*bottom:\s*max\(/);
+  assert.match(css, /\.host-drawer\s*\{[\s\S]*overflow-y:\s*auto;/);
+  assert.match(css, /\.host-drawer\s*\{[\s\S]*overscroll-behavior:\s*contain;/);
+  assert.match(css, /\.host-drawer\s*\{[\s\S]*-webkit-overflow-scrolling:\s*touch;/);
+  assert.match(css, /\.host-drawer\s*\{[\s\S]*touch-action:\s*pan-y;/);
+  assert.match(css, /\.host-drawer \*\s*\{[\s\S]*touch-action:\s*pan-y;/);
+  assert.match(css, /\.host-drawer-range\s*\{[\s\S]*touch-action:\s*pan-x pan-y;/);
+});
+
 test("index.html exposes the remote stream stage", async () => {
   const html = await readFile(resolve(here, "../index.html"), "utf8");
   assert.match(html, /id="remoteVideo"/);
+  assert.match(html, /id="streamBackdropCanvas"/);
+  assert.match(html, /id="streamCanvas"/);
   assert.match(html, /id="roomStatus"/);
   assert.match(html, /id="transportMode"/);
+  assert.match(html, /id="streamTelemetry"/);
+  assert.match(html, /id="fullscreenPlayback"/);
+  assert.match(html, /id="videoWidthInput"/);
+  assert.match(html, /id="videoHeightInput"/);
+  assert.match(html, /id="videoFpsInput"/);
+  assert.match(html, /id="videoBitrateInput"/);
+});
+
+test("index.html keeps the decode video hidden behind the canvas renderer", async () => {
+  const html = await readFile(resolve(here, "../index.html"), "utf8");
+  assert.match(html, /<video[^>]*id="remoteVideo"[^>]*hidden/);
+});
+
+test("index.html cache-busts the top-level frontend assets", async () => {
+  const html = await readFile(resolve(here, "../index.html"), "utf8");
+  assert.match(html, /href="\/styles\.css\?v=[^"]+"/);
+  assert.match(html, /src="\/app\.mjs\?v=[^"]+"/);
+});
+
+test("index.html points users at the streaming gateway port", async () => {
+  const html = await readFile(resolve(here, "../index.html"), "utf8");
+  assert.match(html, /placeholder="192\.168\.0\.10:8082"/);
+});
+
+test("styles.css keeps the controller fixed above the video layer", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.match(css, /\.stream-stage\s*\{[\s\S]*position:\s*fixed;/);
+  assert.match(css, /\.stream-stage\s*\{[\s\S]*z-index:\s*0;/);
+  assert.match(css, /\.controller\s*\{[\s\S]*position:\s*fixed;/);
+  assert.match(css, /\.controller\s*\{[\s\S]*inset:\s*0;/);
+  assert.match(css, /\.controller\s*\{[\s\S]*z-index:\s*10;/);
+});
+
+test("styles.css fits the full remote frame inside the phone viewport", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.match(css, /\.stream-canvas\s*\{[\s\S]*width:\s*100%;/);
+  assert.match(css, /\.stream-canvas\s*\{[\s\S]*height:\s*100%;/);
+  assert.match(css, /\.stream-canvas-foreground/);
+  assert.match(css, /\.stream-canvas-backdrop/);
+});
+
+test("styles.css keeps the live video free from dark glass overlays", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  assert.match(css, /body::after\s*\{[\s\S]*(display:\s*none;|background:\s*none;)/);
+  assert.match(css, /\.stream-stage::after\s*\{[\s\S]*(display:\s*none;|background:\s*none;)/);
+  assert.match(css, /\.stream-canvas-foreground\s*\{[\s\S]*filter:\s*none;/);
+});
+
+test("styles.css renders transparent controls without frosted-glass blur", async () => {
+  const css = await readFile(resolve(here, "../styles.css"), "utf8");
+  const buttonRule = extractCssRule(
+    css,
+    String.raw`\.btn,\s*\.face-btn,\s*\.meta-btn,\s*\.shoulder-btn,\s*\.system-btn`,
+  );
+  const stickRule = extractCssRule(css, String.raw`\.stick`);
+  const stickKnobRule = extractCssRule(css, String.raw`\.stick-knob`);
+
+  assert.match(buttonRule, /background:\s*rgba\([^)]*,\s*0\.\d+\)/);
+  assert.doesNotMatch(buttonRule, /backdrop-filter:/);
+  assert.match(stickRule, /background:\s*radial-gradient\(/);
+  assert.doesNotMatch(stickRule, /backdrop-filter:/);
+  assert.doesNotMatch(stickKnobRule, /backdrop-filter:/);
+  assert.match(buttonRule, /--control-alpha:\s*var\(--transparent-control-alpha\)/);
+  assert.match(buttonRule, /opacity:\s*var\(--control-alpha\)/);
+  assert.match(extractCssRule(css, String.raw`\.trigger-label`), /opacity:\s*var\(--control-alpha\)/);
+  assert.match(extractCssRule(css, String.raw`\.stick`), /opacity:\s*var\(--control-alpha\)/);
 });
 
 test("startup ignores window.location.host when no host target is saved", async (t) => {
@@ -578,6 +945,125 @@ test("host switches after a prior disconnect still reconnect on the next close",
   assert.match(harness.connEl.textContent, /WS: connecting ws:\/\/192\.168\.0\.11:8081\/ws/);
 });
 
+test("startup requests browser fullscreen with hidden navigation UI when supported", async (t) => {
+  const harness = installAppHarness({ savedHostTarget: "" });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-startup-fullscreen`);
+  await harness.settle();
+
+  assert.deepEqual(harness.fullscreenRequests, [{ navigationUI: "hide" }]);
+  assert.deepEqual(harness.orientationLocks, ["landscape"]);
+});
+
+test("host submit does not spam another fullscreen request once immersive playback is already active", async (t) => {
+  const harness = installAppHarness({ savedHostTarget: "" });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-fullscreen-submit`);
+  await harness.settle();
+
+  assert.equal(harness.fullscreenRequests.length, 1);
+  harness.hostTargetInputEl.value = "192.168.0.11:8082";
+  harness.hostTargetFormEl.dispatch("submit");
+  await harness.settle();
+
+  assert.deepEqual(harness.fullscreenRequests, [{ navigationUI: "hide" }]);
+  assert.deepEqual(harness.orientationLocks, ["landscape"]);
+});
+
+test("first gameplay interaction does not spam another fullscreen request when immersive playback is already active", async (t) => {
+  const harness = installAppHarness({ savedHostTarget: "192.168.0.11:8082" });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-first-gesture-fullscreen`);
+  await harness.settle();
+
+  assert.equal(harness.fullscreenRequests.length, 1);
+  harness.buttonElements[0].dispatch("pointerdown", { pointerId: 7 });
+  await harness.settle();
+
+  assert.deepEqual(harness.fullscreenRequests, [{ navigationUI: "hide" }]);
+  assert.deepEqual(harness.orientationLocks, ["landscape"]);
+});
+
+test("drawer fullscreen button requests browser fullscreen with hidden navigation UI", async (t) => {
+  const harness = installAppHarness({ savedHostTarget: "192.168.0.11:8082" });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-drawer-fullscreen`);
+  await harness.settle();
+
+  globalThis.document.fullscreenElement = null;
+  harness.fullscreenPlaybackEl.dispatch("click");
+  await harness.settle();
+
+  assert.deepEqual(harness.fullscreenRequests, [{ navigationUI: "hide" }, { navigationUI: "hide" }]);
+  assert.deepEqual(harness.orientationLocks, ["landscape", "landscape"]);
+});
+
+test("gameplay controls cancel native mobile media gestures immediately", async (t) => {
+  const harness = installAppHarness({ savedHostTarget: "192.168.0.11:8082" });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-touch-trap`);
+
+  let buttonPrevented = false;
+  let stickPrevented = false;
+  harness.buttonElements[0].dispatch("touchstart", {
+    cancelable: true,
+    preventDefault() {
+      buttonPrevented = true;
+    },
+  });
+  harness.leftStickEl.dispatch("touchmove", {
+    cancelable: true,
+    preventDefault() {
+      stickPrevented = true;
+    },
+  });
+
+  assert.equal(buttonPrevented, true);
+  assert.equal(stickPrevented, true);
+});
+
+test("gameplay drag keeps cancelling document-level touch moves after the finger leaves the control", async (t) => {
+  const harness = installAppHarness({ savedHostTarget: "192.168.0.11:8082" });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-document-touch-guard`);
+
+  let startPrevented = false;
+  let movePrevented = false;
+  let endPrevented = false;
+
+  harness.leftStickEl.dispatch("touchstart", {
+    cancelable: true,
+    changedTouches: [{ identifier: 17 }],
+    preventDefault() {
+      startPrevented = true;
+    },
+  });
+  harness.dispatchDocument("touchmove", {
+    cancelable: true,
+    changedTouches: [{ identifier: 17 }],
+    preventDefault() {
+      movePrevented = true;
+    },
+  });
+  harness.dispatchDocument("touchend", {
+    cancelable: true,
+    changedTouches: [{ identifier: 17 }],
+    preventDefault() {
+      endPrevented = true;
+    },
+  });
+
+  assert.equal(startPrevented, true);
+  assert.equal(movePrevented, true);
+  assert.equal(endPrevented, true);
+});
+
 test("slot resets when the host changes and when websocket falls back", async (t) => {
   const harness = installAppHarness({ savedHostTarget: "192.168.0.10:8081" });
   t.after(() => harness.restore());
@@ -587,17 +1073,17 @@ test("slot resets when the host changes and when websocket falls back", async (t
   assert.equal(harness.webSockets.length, 1);
   const firstSocket = harness.webSockets[0];
   firstSocket.dispatch("message", { data: JSON.stringify({ type: "slot", slot: 7 }) });
-  assert.equal(harness.slotEl.textContent, "slot: 7 mode:ws");
+  assert.equal(harness.slotEl.textContent, "slot: 7");
 
   harness.hostTargetInputEl.value = "192.168.0.11:8081";
   harness.hostTargetFormEl.dispatch("submit");
 
   assert.equal(harness.webSockets.length, 2);
-  assert.equal(harness.slotEl.textContent, "slot: - mode:ws");
+  assert.equal(harness.slotEl.textContent, "slot: -");
 
   const secondSocket = harness.webSockets[1];
   secondSocket.serverClose();
-  assert.equal(harness.slotEl.textContent, "slot: - mode:http");
+  assert.equal(harness.slotEl.textContent, "slot: -");
 });
 
 test("startup restores saved stick sensitivity and slider changes persist", async (t) => {
@@ -619,6 +1105,190 @@ test("startup restores saved stick sensitivity and slider changes persist", asyn
   assert.equal(harness.stickSensitivityValueEl.textContent, "90%");
 });
 
+test("startup restores saved control opacity and slider changes persist to the runtime css vars", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    savedControlOpacity: "0.31",
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-control-opacity`);
+
+  assert.equal(harness.controlOpacityInputEl.value, "0.31");
+  assert.equal(harness.controlOpacityValueEl.textContent, "31%");
+  assert.equal(harness.rootStyle.values.get("--transparent-control-alpha"), "0.31");
+
+  harness.controlOpacityInputEl.value = "0.45";
+  harness.controlOpacityInputEl.dispatch("input");
+
+  assert.equal(harness.storage.getItem("joycon_control_opacity"), "0.45");
+  assert.equal(harness.controlOpacityValueEl.textContent, "45%");
+  assert.equal(harness.rootStyle.values.get("--transparent-control-alpha"), "0.45");
+});
+
+test("startup restores controller and hud visibility, and drawer toggles persist both switches", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    savedControllerVisible: "false",
+    savedHudVisible: "false",
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-visibility-switches`);
+  await harness.settle();
+
+  assert.equal(harness.controllerVisibleInputEl.checked, false);
+  assert.equal(harness.hudVisibleInputEl.checked, false);
+  assert.equal(harness.controllerEl.hidden, true);
+  assert.equal(harness.streamTelemetryEl.hidden, true);
+
+  harness.controllerVisibleInputEl.checked = true;
+  harness.controllerVisibleInputEl.dispatch("input");
+  harness.hudVisibleInputEl.checked = true;
+  harness.hudVisibleInputEl.dispatch("input");
+
+  assert.equal(harness.storage.getItem("joycon_controller_visible"), "true");
+  assert.equal(harness.storage.getItem("joycon_hud_visible"), "true");
+  assert.equal(harness.controllerEl.hidden, false);
+  assert.equal(harness.streamTelemetryEl.hidden, false);
+});
+
+test("host input changes persist a local draft before connect is pressed", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "",
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-host-draft`);
+
+  harness.hostTargetInputEl.value = "10.0.0.3:8082";
+  harness.hostTargetInputEl.dispatch("input");
+
+  assert.equal(harness.storage.getItem("joycon_host_target_draft"), "10.0.0.3:8082");
+});
+
+test("apply stream uses the current host input before connect saves it", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "",
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-apply-stream-current-host`);
+  await harness.settle();
+
+  harness.hostTargetInputEl.value = "10.0.0.3:8082";
+  harness.streamSettingsSaveEl.dispatch("click");
+  await harness.settle();
+
+  assert.ok(
+    harness.fetchCalls.some(
+      ([url, init]) => String(url) === "http://10.0.0.3:8082/api/stream/settings" && init?.method === "POST",
+    ),
+    "expected Apply Stream to post to the current host input",
+  );
+});
+
+test("apply stream polls until the publisher reports the profile is active", async (t) => {
+  let getCount = 0;
+  const harness = installAppHarness({
+    savedHostTarget: "",
+    fetchImpl: async (url, init = {}) => {
+      if (String(url).includes("/api/stream/settings") && init.method === "POST") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1980,
+              height: 1080,
+              fps: 90,
+              bitrateKbps: 6000,
+              applied: false,
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/stream/settings") && init.method === "GET") {
+        getCount += 1;
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1980,
+              height: 1080,
+              fps: 90,
+              bitrateKbps: 6000,
+              applied: getCount >= 2,
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {};
+        },
+        async text() {
+          return "v=0\r\n";
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-apply-stream-poll`);
+  await harness.settle();
+
+  harness.hostTargetInputEl.value = "10.0.0.3:8082";
+  harness.streamSettingsSaveEl.dispatch("click");
+  await harness.settle();
+  assert.equal(harness.streamSettingsStatusEl.textContent, "applying stream profile");
+
+  const firstPoll = [...harness.timers.values()].find((timer) => !timer.cleared);
+  firstPoll.callback();
+  await harness.settle();
+  const secondPoll = [...harness.timers.values()].find((timer) => !timer.cleared && timer !== firstPoll);
+  secondPoll.callback();
+  await harness.settle();
+
+  assert.equal(harness.streamSettingsStatusEl.textContent, "stream applied");
+});
+
+test("stream settings input changes auto-apply after a short pause", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "10.0.0.3:8082",
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-autosave`);
+  await harness.settle();
+
+  harness.videoFpsInputEl.value = "90";
+  harness.videoFpsInputEl.dispatch("input");
+  harness.videoBitrateInputEl.value = "12000";
+  harness.videoBitrateInputEl.dispatch("input");
+
+  const autoSaveTimer = [...harness.timers.values()].find((timer) => !timer.cleared);
+  assert.ok(autoSaveTimer, "expected a pending autosave timer");
+
+  autoSaveTimer.callback();
+  await harness.settle();
+
+  const streamSaveCall = harness.fetchCalls.find(
+    ([url, init]) => String(url) === "http://10.0.0.3:8082/api/stream/settings" && init?.method === "POST",
+  );
+  assert.ok(streamSaveCall, "expected a stream settings POST after the autosave delay");
+  assert.deepEqual(JSON.parse(streamSaveCall[1].body), {
+    width: 1280,
+    height: 720,
+    fps: 90,
+    bitrateKbps: 12000,
+  });
+});
+
 test("startup prefers the reconnect endpoint when a saved token exists", async (t) => {
   const harness = installAppHarness({
     savedHostTarget: "192.168.0.10:8081",
@@ -629,7 +1299,10 @@ test("startup prefers the reconnect endpoint when a saved token exists", async (
   await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-prefer-reconnect`);
   await harness.settle();
 
-  assert.match(String(harness.fetchCalls[0][0]), /\/api\/room\/reconnect$/);
+  assert.ok(
+    harness.fetchCalls.some(([url]) => /\/api\/room\/reconnect$/.test(String(url))),
+    "expected the startup flow to call the reconnect endpoint",
+  );
 });
 
 test("successful room negotiation persists the reconnect token", async (t) => {
@@ -642,6 +1315,133 @@ test("successful room negotiation persists the reconnect token", async (t) => {
   await harness.settle();
 
   assert.equal(harness.storage.getItem("joycon_stream_reconnect_token"), "reconnect-fixed");
+});
+
+test("becoming visible again re-syncs the stream session instead of freezing on stale peers", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-visibility-resync`);
+  await harness.settle();
+
+  const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const initialMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+  const initialSocketCount = harness.webSockets.length;
+
+  harness.setVisibility("hidden");
+  harness.setVisibility("visible");
+  await harness.settle();
+
+  const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const resumedMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+
+  assert.ok(harness.webSockets.length > initialSocketCount, "expected websocket reconnect on visibility resume");
+  assert.ok(resumedRoomCalls > initialRoomCalls, "expected room resync on visibility resume");
+  assert.ok(resumedMediaCalls > initialMediaCalls, "expected media renegotiation on visibility resume");
+});
+
+test("stream telemetry shows live protocol, fps, bitrate, latency, quality, and loss", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-telemetry`);
+  await harness.settle();
+
+  harness.runAnimationFrame(0);
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+
+  assert.match(harness.streamTelemetryEl.textContent, /protocol/i);
+  assert.match(harness.streamTelemetryEl.textContent, /fps/i);
+  assert.match(harness.streamTelemetryEl.textContent, /bitrate/i);
+  assert.match(harness.streamTelemetryEl.textContent, /latency/i);
+  assert.match(harness.streamTelemetryEl.textContent, /quality/i);
+  assert.match(harness.streamTelemetryEl.textContent, /loss/i);
+  assert.doesNotMatch(harness.streamTelemetryEl.textContent, /webrtc\/webrtc/i);
+  assert.match(harness.streamTelemetryEl.innerHTML ?? "", /stream-telemetry-line/);
+  assert.match(harness.streamTelemetryEl.innerHTML ?? "", /stream-telemetry-separator/);
+});
+
+test("stream telemetry falls back to decoded video progress when rtc stats omit inbound video fps", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    rtcGetStatsImpl: () => new Map(),
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-telemetry-fallback`);
+  await harness.settle();
+
+  harness.runAnimationFrame(0);
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+
+  assert.doesNotMatch(harness.streamTelemetryEl.textContent, /fps\s*--/i);
+  assert.match(harness.streamTelemetryEl.textContent, /fps/i);
+});
+
+test("stream telemetry hud does not re-render on every animation frame between one-second samples", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-telemetry-cadence`);
+  await harness.settle();
+
+  harness.runAnimationFrame(0);
+  await harness.settle();
+  const initialUpdates = harness.streamTelemetryEl.innerHTMLUpdates;
+
+  harness.runAnimationFrame(200);
+  harness.runAnimationFrame(400);
+  harness.runAnimationFrame(800);
+  await harness.settle();
+
+  assert.equal(
+    harness.streamTelemetryEl.innerHTMLUpdates,
+    initialUpdates,
+    "the hud should wait for the next one-second telemetry sample before re-rendering",
+  );
+
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+
+  assert.ok(harness.streamTelemetryEl.innerHTMLUpdates > initialUpdates);
+});
+
+test("bottom latency pill stays hidden once the structured telemetry hud is active", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-latency-hidden`);
+  await harness.settle();
+
+  assert.equal(harness.latencyEl.hidden, true);
+});
+
+test("top-right transport pill stays hidden after the centered protocol hud takes over", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-transport-pill-hidden`);
+  await harness.settle();
+
+  assert.equal(harness.transportModeEl.hidden, true);
 });
 
 test("rtc control negotiation clears the degraded room label", async (t) => {
@@ -666,7 +1466,7 @@ test("rtc control negotiation clears the degraded room label", async (t) => {
   );
 });
 
-test("transport hud follows later http fallback after rtc negotiation", async (t) => {
+test("transport hud stays on webrtc while the rtc input channel is alive", async (t) => {
   const harness = installAppHarness({
     savedHostTarget: "192.168.0.10:8081",
     enableRtc: true,
@@ -678,7 +1478,7 @@ test("transport hud follows later http fallback after rtc negotiation", async (t
 
   harness.webSockets[0].serverClose();
 
-  assert.equal(harness.transportModeEl.textContent, "control: http degraded");
+  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
 });
 
 test("media failure is surfaced as a visible stream error", async (t) => {
@@ -686,7 +1486,7 @@ test("media failure is surfaced as a visible stream error", async (t) => {
     savedHostTarget: "192.168.0.10:8081",
     enableRtc: true,
     fetchImpl: async (url) => {
-      if (String(url).includes("/game/whep")) {
+      if (String(url).includes("/media/whep")) {
         return {
           ok: false,
           status: 503,
@@ -757,7 +1557,7 @@ test("stale media completion does not overwrite a newer host attempt", async (t)
         };
       }
 
-      if (String(url).includes("192.168.0.10") && String(url).includes("/game/whep")) {
+      if (String(url).includes("192.168.0.10") && String(url).includes("/media/whep")) {
         await firstMediaPromise;
         return {
           ok: true,
@@ -799,7 +1599,7 @@ test("stale media completion does not overwrite a newer host attempt", async (t)
         };
       }
 
-      if (String(url).includes("192.168.0.11") && String(url).includes("/game/whep")) {
+      if (String(url).includes("192.168.0.11") && String(url).includes("/media/whep")) {
         return {
           ok: true,
           async text() {
