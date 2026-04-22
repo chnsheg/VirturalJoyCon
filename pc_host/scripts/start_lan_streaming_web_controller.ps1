@@ -267,7 +267,8 @@ function Get-StaleFirewallRules {
 
     $staleRules = @(
         ("JoyCon-MediaMTX-WebRTC-{0}" -f 8889),
-        "JoyCon-UDP-$LegacyUdpPort"
+        "JoyCon-UDP-$LegacyUdpPort",
+        "JoyCon-WebRTC-Control-UDP-Dynamic"
     )
 
     return @($staleRules | Where-Object { Test-FirewallRuleExists -DisplayName $_ })

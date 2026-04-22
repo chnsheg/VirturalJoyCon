@@ -35,7 +35,7 @@ function Ensure-ProgramFirewallRule {
     )
 
     Remove-FirewallRule -Name $Name
-    netsh advfirewall firewall add rule name="$Name" dir=in action=allow program="$Program" protocol=$Protocol profile=private remoteip=localsubnet | Out-Null
+    netsh advfirewall firewall add rule name="$Name" dir=in action=allow program="$Program" protocol=$Protocol profile=any remoteip=localsubnet | Out-Null
     Write-Host "Rule ensured: $Name" -ForegroundColor Green
 }
 
@@ -69,6 +69,7 @@ if ($WebRtcControlProgram) {
 } else {
     Remove-FirewallRule -Name "JoyCon-WebRTC-Control-UDP"
 }
+Remove-FirewallRule -Name "JoyCon-WebRTC-Control-UDP-Dynamic"
 
 if (-not $SkipUdp) {
     $rules += @{ Name = "JoyCon-UDP-$UdpPort"; Protocol = 'UDP'; Port = $UdpPort }

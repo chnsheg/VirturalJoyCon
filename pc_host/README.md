@@ -102,7 +102,9 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1 -DryRun -SkipDependencyIns
 | `8082` | `TCP` | 控制网关，也是外部统一访问入口 |
 | `8189` | `UDP` | WebRTC 实际媒体传输 |
 
-另外，一键启动脚本还会添加一条 `Python 程序级 UDP` 防火墙规则，用于浏览器到 Python 控制网关的 `WebRTC DataChannel`。这是因为 aiortc 的控制 WebRTC 会使用随机本地 UDP 端口；这不是固定端口暴露，而是限制为 Python 程序、UDP、Private 网络和 LocalSubnet 的入站规则，用来避免控制通道退回 `RTC+HTTP`。
+其中 `8189/UDP` 给视频 WebRTC 媒体使用。控制通道也走 WebRTC DataChannel，但 aiortc 会由 Python 进程申请 UDP 端口，所以这里不额外开放一大段 UDP 端口。
+
+一键启动脚本会添加一条 `Python 程序级 UDP` 规则，并限制为 `LocalSubnet`，也就是只允许局域网来源访问。这样控制通道可以继续走 `WebRTC DataChannel`，避免页面显示 `RTC+HTTP`。
 
 ### 仅本机使用
 
@@ -118,7 +120,7 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1 -DryRun -SkipDependencyIns
 对应的防火墙含义如下：
 
 - 需要放行：`8090/TCP`、`8082/TCP`、`8189/UDP`
-- 需要允许：Python 程序的局域网 UDP 入站，用于 `WebRTC DataChannel`
+- 需要允许：Python 程序级 UDP 入站，用于 `WebRTC DataChannel`
 - 不需要放行：`8889/TCP`、`8554/TCP`、`9997/TCP`、`28777/UDP`
 
 如果只想手动修复防火墙，也可以在管理员 PowerShell 7 中执行：
@@ -134,5 +136,6 @@ pwsh .\scripts\fix_network_access.ps1 -HttpPort 8082 -FrontendPort 8090 -WebRtcC
 - 放行 `8082/TCP`
 - 放行 `8189/UDP`
 - 添加 Python 程序级 UDP 规则，让控制通道继续走 `WebRTC DataChannel`
+- 清理旧的动态 UDP 范围规则
 - 清理旧的 `8889/TCP` 外部规则
 - 清理旧的 `28777/UDP` 外部规则

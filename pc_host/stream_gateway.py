@@ -211,6 +211,14 @@ def _rewrite_candidate_host(line: str, preferred_host: str) -> str:
     return candidate_prefix + " ".join(parts)
 
 
+def _rewrite_connection_host(line: str, preferred_host: str) -> str:
+    if not line.startswith("c=IN "):
+        return line
+
+    family = "IP6" if ":" in preferred_host else "IP4"
+    return f"c=IN {family} {preferred_host}"
+
+
 def filter_whep_answer_for_host(answer_sdp: str, preferred_host: str) -> str:
     host_text = _extract_host_only(preferred_host)
     if not host_text:
@@ -224,7 +232,7 @@ def filter_whep_answer_for_host(answer_sdp: str, preferred_host: str) -> str:
         line = raw_line.rstrip("\r")
         candidate_host = _candidate_host_from_sdp_line(line)
         if candidate_host is None:
-            filtered_lines.append(line)
+            filtered_lines.append(_rewrite_connection_host(line, host_text))
             continue
 
         if candidate_host == host_text:
@@ -238,7 +246,10 @@ def filter_whep_answer_for_host(answer_sdp: str, preferred_host: str) -> str:
 
     if not kept_matching_candidate:
         rewritten_lines = [
-            _rewrite_candidate_host(line, preferred_host=host_text)
+            _rewrite_connection_host(
+                _rewrite_candidate_host(line, preferred_host=host_text),
+                host_text,
+            )
             for line in answer_sdp.splitlines()
         ]
         trailing_newline = "\r\n" if answer_sdp.endswith(("\r\n", "\n")) else ""

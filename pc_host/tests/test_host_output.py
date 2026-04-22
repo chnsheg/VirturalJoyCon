@@ -128,11 +128,27 @@ function Out-Null {{
             result.stdout,
         )
         self.assertIn(
+            'NETSH:advfirewall firewall delete rule name=JoyCon-WebRTC-Control-UDP-Dynamic',
+            result.stdout,
+        )
+        self.assertNotIn(
+            'NETSH:advfirewall firewall add rule name=JoyCon-WebRTC-Control-UDP-Dynamic',
+            result.stdout,
+        )
+        self.assertNotIn(
+            'localport=49152-65535',
+            result.stdout,
+        )
+        self.assertIn(
             'program=C:\\Python312\\python.exe',
             result.stdout,
         )
         self.assertIn(
             'protocol=UDP',
+            result.stdout,
+        )
+        self.assertIn(
+            'profile=any',
             result.stdout,
         )
         self.assertIn(

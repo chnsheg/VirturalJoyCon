@@ -825,6 +825,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         payload = await response.json()
 
         self.assertEqual(response.status, 200)
+        self.assertIn("c=IN IP4 192.168.0.119", payload["sdp"])
         self.assertIn("a=candidate:3 1 udp 2130706431 192.168.0.119 53394 typ host", payload["sdp"])
         self.assertNotIn("10.0.0.2 53389 typ host", payload["sdp"])
         self.assertNotIn("172.25.16.1 53390 typ host", payload["sdp"])
