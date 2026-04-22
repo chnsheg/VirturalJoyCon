@@ -1,274 +1,134 @@
-# LAN Wireless Virtual Gamepad Host (MVP)
+# 局域网串流 Web Controller
 
-## Project startup overview
+这个目录是 Windows 主机端，用来把手柄控制、屏幕串流和手机端静态网页组合成一个可在同一局域网访问的 Web Controller。
 
-For the current streaming build, start the project from `pc_host` in this order:
+## 环境安装
 
-1. Install Python and runtime dependencies once.
-2. Open the Windows firewall only for the LAN-facing ports the phone actually needs: `8090/TCP`, `8082/TCP`, and `8189/UDP`.
-3. Start `stream_gateway.py` on `8082/TCP`.
-4. Start MediaMTX with `pwsh .\scripts\start_media_stack.ps1`.
-5. Start FFmpeg publishing with `pwsh .\scripts\start_stream_publisher.ps1`.
-6. Host `pc_host\web` as static files, open the page from the client, and enter `LAN_IP:8082` in the drawer.
+### 系统要求
 
-Keep these three long-running processes open while testing: the Python stream gateway, MediaMTX, and the FFmpeg publisher. Use the standalone controller section later in this document only when you want the input-only `web_host.py` path on `8081/TCP`.
+- Windows 10/11
+- PowerShell 7
+- Python 3.12 或更高版本
+- `ViGEmBus / Nefarius Virtual Gamepad Emulation Bus`
+- 手机和 PC 在同一局域网
 
-## Streaming stack quick start
+### 安装 Python 依赖
 
-Use this flow for the shared browser video/audio stream plus WebRTC control gateway. The phone only needs `8090/TCP` for the static frontend, `8082/TCP` for the gateway and proxied media entrypoint, plus `8189/UDP` for WebRTC media. `8889/TCP stays local` on the host and does not need a Windows firewall rule.
-The stable Windows path is FFmpeg low-latency encoding into local RTSP/TCP ingest (`rtsp://127.0.0.1:8554/game`), then MediaMTX WHEP/WebRTC playback in the browser.
-Run every PowerShell command in this section with PowerShell 7 via `pwsh`, not Windows PowerShell 5.1.
-
-If you are chasing sub-20ms video latency, the PC display/capture path and the client display both need to sustain 120Hz-class updates. If FFmpeg stats show requested `90` or `120` fps but actual `fps` stays near `59`, or `dup=` keeps climbing, the capture source is capped around 60Hz and the frame budget is already mostly consumed before network and decode.
-
-### 1. Install dependencies
-
-Run inside `pc_host`:
+在 `pc_host` 目录执行：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-You also need these non-Python runtime dependencies before the streaming stack will work:
+### 安装本机运行时
 
-- `mediamtx.exe` available on `PATH` or passed to `.\scripts\start_media_stack.ps1`
-- `ffmpeg.exe` available on `PATH` or passed to `.\scripts\start_stream_publisher.ps1`
-- A valid Windows DirectShow audio capture device for FFmpeg input, for example `virtual-audio-capturer`
+必须具备以下本机依赖：
 
-Recommended install commands:
+- `mediamtx.exe`
+- `ffmpeg.exe`
+- 可被 FFmpeg 识别的 Windows `DirectShow` 音频采集设备，例如 `virtual-audio-capturer`
+
+推荐直接用 `winget` 安装：
 
 ```powershell
 winget install --id bluenviron.mediamtx --exact
 winget install --id Gyan.FFmpeg.Essentials --exact
 ```
 
-The startup scripts auto-detect the default winget install directories, so they still work when a fresh `pwsh` session has not picked up a PATH update yet.
+当前串流链路默认是：
 
-For low latency on the same LAN, keep `config/mediamtx.yml` restricted to the physical Wi-Fi interface:
+- FFmpeg 把画面推到 `rtsp://127.0.0.1:8554/game`
+- MediaMTX 在本机处理 WebRTC / WHEP
+- 外部手机统一通过网关地址访问，不直接连本机内部端口
 
-```yaml
-webrtcIPsFromInterfaces: true
-webrtcIPsFromInterfacesList:
-  - WLAN
-webrtcAdditionalHosts: []
+其中 `rtsp://127.0.0.1:8554/game` 走的是 `RTSP/TCP` 本机内部推流链路。
+
+## 一键启动
+
+首次启动建议用`管理员`权限打开 `PowerShell 7`，这样脚本可以自动检查并修复防火墙。
+
+在 `pc_host` 目录执行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+pwsh .\scripts\start_lan_streaming_web_controller.ps1
 ```
 
-Use the WLAN address printed by Windows, for example `192.168.0.119:8082`, in the controller drawer. Do not use tunnel or virtual-adapter addresses such as `10.x`, `172.25.x`, or `169.254.x` for the LAN latency test. If a remote browser is on the same Wi-Fi and MediaMTX logs still show a wrong WebRTC candidate such as `172.25.x.x` or `169.254.x.x`, restart MediaMTX after fixing `config/mediamtx.yml`.
+这个脚本会自动完成：
 
-### 2. Open the Windows firewall when needed
+- 检查 `Python 3.12`、`ViGEmBus`、`mediamtx.exe`、`ffmpeg.exe`
+- 安装 `requirements.txt`
+- 检查并修复局域网需要的防火墙规则
+- 启动控制网关
+- 启动 MediaMTX
+- 启动 FFmpeg 发布器
+- 启动静态网页服务器
 
-Run inside `pc_host` from an elevated PowerShell 7 session:
+如果你只想预览启动流程，不真正拉起服务，可以执行：
+
+```powershell
+pwsh .\scripts\start_lan_streaming_web_controller.ps1 -DryRun -SkipDependencyInstall
+```
+
+## 手机访问
+
+启动完成后，终端会打印局域网地址。假设主机 IP 是 `192.168.0.119`，手机侧使用这 3 个地址：
+
+- 前端页面：`http://192.168.0.119:8090`
+- 抽屉里的主机地址：`192.168.0.119:8082`
+- 媒体地址：`http://192.168.0.119:8082/media/whep`
+
+访问步骤：
+
+1. 手机打开 `http://192.168.0.119:8090`
+2. 打开右侧抽屉
+3. 输入 `192.168.0.119:8082`
+4. 点击 `Connect`
+5. 页面会通过 `WHEP` 从 `http://192.168.0.119:8082/media/whep` 拉取音视频
+
+如果手机打不开页面或连不上主机，优先检查：
+
+- 手机和 PC 是否在同一局域网
+- 是否使用了主机真实 IPv4，而不是 `127.0.0.1`
+- 首次启动时是否以管理员权限运行过脚本，让它完成防火墙配置
+
+## 端口说明
+
+### 需要对局域网开放
+
+| 端口 | 协议 | 作用 |
+| --- | --- | --- |
+| `8090` | `TCP` | 手机访问静态网页服务器 |
+| `8082` | `TCP` | 控制网关，也是外部统一访问入口 |
+| `8189` | `UDP` | WebRTC 实际媒体传输 |
+
+### 仅本机使用
+
+以下端口只在主机内部链路使用，`仅本机使用`，不需要对局域网开放：
+
+| 端口 | 协议 | 作用 |
+| --- | --- | --- |
+| `8889` | `TCP` | MediaMTX 本机 WebRTC / WHEP 入口，上层由网关代理 |
+| `8554` | `TCP` | FFmpeg 推流到 MediaMTX 的 `RTSP/TCP` 入口 |
+| `9997` | `TCP` | MediaMTX API |
+| `28777` | `UDP` | 旧版 legacy UDP 通道；当前一键启动不使用 |
+
+对应的防火墙含义如下：
+
+- 需要放行：`8090/TCP`、`8082/TCP`、`8189/UDP`
+- 不需要放行：`8889/TCP`、`8554/TCP`、`9997/TCP`、`28777/UDP`
+
+如果只想手动修复防火墙，也可以在管理员 PowerShell 7 中执行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 pwsh .\scripts\fix_network_access.ps1 -HttpPort 8082 -FrontendPort 8090 -EnableWebRtcMedia -SkipUdp
 ```
 
-The helper opens only the LAN-facing ports: `8090/TCP`, `8082/TCP`, and `8189/UDP`. MediaMTX still listens locally on `8889/TCP`, but `8889/TCP stays local` and is not opened to the LAN.
-
-### 3. Start the control gateway
-
-Run inside `pc_host`:
-
-```bash
-python stream_gateway.py --host 0.0.0.0 --port 8082
-```
-
-### 4. Start MediaMTX
-
-Run inside `pc_host`:
-
-```powershell
-pwsh .\scripts\start_media_stack.ps1
-```
-
-### 5. Start the Windows publisher
-
-Run inside `pc_host`:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1
-```
-
-The default publisher path assumes an NVIDIA GPU with NVENC, uses `h264_nvenc`, and publishes to MediaMTX through local RTSP/TCP ingest. TCP is the default because it avoids local RTP packet loss between FFmpeg and MediaMTX, which otherwise forces the browser to recover from damaged or missing H264 frames.
-The script auto-detects a DirectShow audio capture device and prefers virtual or loopback-style devices when available.
-If NVENC is unavailable, use the software fallback without editing the script:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -VideoEncoder libx264
-```
-
-The `libx264` fallback keeps the low-latency design with `-preset ultrafast -tune zerolatency`, but it will use more CPU than the NVIDIA NVENC path.
-If you want to force a specific audio source, pass the DirectShow device name explicitly:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -AudioDevice "virtual-audio-capturer"
-```
-
-If Desktop Duplication is unavailable on this machine, use the GDI fallback explicitly:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -VideoDevice gdigrab
-```
-
-If you later switch to a FFmpeg build with compatible direct WHIP ingest, you can opt into it explicitly:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -PublishTransport whip -PublishUrl http://127.0.0.1:8889/game/whip
-```
-
-RTSP/UDP remains available only for comparison runs. Use it if you want to verify whether a specific machine can avoid packet loss in MediaMTX logs:
-
-```powershell
-pwsh .\scripts\start_stream_publisher.ps1 -PublishTransport rtsp_udp
-```
-
-### 6. Open the frontend and connect
-
-Host `pc_host\web` with any static HTTP server, open the page from the phone, then connect the drawer to `LAN_IP:8082`.
-
-Example:
-
-```bash
-cd web
-python -m http.server 8090 --bind 0.0.0.0
-```
-
-Open the frontend on the phone:
-
-```text
-http://192.168.0.119:8090
-```
-
-Enter this host target in the drawer:
-
-```text
-192.168.0.119:8082
-```
-
-For media playback, the browser or other client should subscribe through the gateway WHEP endpoint:
-
-```text
-http://192.168.0.119:8082/media/whep
-```
-
-Replace `192.168.0.119` with this host's reachable LAN IP. If a remote browser does not subscribe to `http://<LAN_IP>:8082/media/whep`, it will not receive the published stream even if the publisher is running.
-
-## Standalone web controller quick start
-
-### 1. Requirements
-
-- Windows 10/11
-- Python 3.12 or newer
-- `ViGEmBus / Nefarius Virtual Gamepad Emulation Bus`
-- Phone and PC on the same LAN
-
-### 2. Install dependencies
-
-Run inside `pc_host`:
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Start the Python host
-
-Run inside `pc_host`:
-
-```bash
-python web_host.py --host 0.0.0.0 --http-port 8081 --udp-port 28777 --timeout 8 --max-devices 4
-```
-
-The host prints `Standalone controller target: <LAN_IP>:8081` when it detects one private LAN address.
-The standalone frontend expects an IPv4 target in `LAN_IP:port` format only.
-
-If auto-detection does not find a private LAN address, manually enter this PC's reachable IPv4 address and port, for example `192.168.0.119:8081`.
-
-### 4. Open the Windows firewall when needed
-
-Run inside `pc_host` from an elevated PowerShell 7 session:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
-```
-
-If you also need the legacy UDP path:
-
-```powershell
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
-```
-
-### 5. Host the standalone frontend
-
-Frontend files are in `pc_host\web`. You can host them with any static HTTP server. Quick example:
-
-```bash
-cd web
-python -m http.server 8090 --bind 0.0.0.0
-```
-
-### 6. Open the frontend and connect
-
-- Visit the frontend page, for example `http://<frontend-host-ip>:8090`
-- Pull open the thin right-side drawer
-- Enter the Python host target as `LAN_IP:8081`
-- Optionally adjust `Stick sensitivity` in the same drawer if the default stick feel is too stiff
-- Press `Connect`
-- The host target and stick sensitivity are saved locally on that device for the next visit
-
-## Runtime summary
-
-1. Install dependencies in `pc_host`:
-
-```bash
-pip install -r requirements.txt
-```
-
-2. Start the Python host:
-
-```bash
-python web_host.py --host 0.0.0.0 --http-port 8081 --udp-port 28777 --timeout 8 --max-devices 4
-```
-
-3. If the phone or another PC cannot reach `8081/TCP`, run the firewall helper in an elevated PowerShell 7 window:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
-```
-
-4. Host `pc_host/web` separately and open it in a browser:
-
-```text
-http://<frontend-host-ip>:8090
-```
-
-5. In the frontend drawer, enter the host terminal's `Standalone controller target: <LAN_IP>:8081`.
-   The input must stay in IPv4 `LAN_IP:port` format, not a hostname.
-
-6. Optional: run the legacy UDP-only bridge:
-
-```bash
-python gamepad_session_manager.py --host 0.0.0.0 --port 28777 --timeout 8 --max-devices 4
-```
-
-## If the phone cannot reach the host
-
-Usually this means:
-
-- The current Wi-Fi network profile is `Public`
-- Windows Firewall is not allowing inbound `8081/TCP`
-
-Run inside `pc_host` from an elevated PowerShell 7 session:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -SkipUdp
-```
-
-If you also need the legacy UDP bridge:
-
-```powershell
-pwsh .\scripts\fix_network_access.ps1 -HttpPort 8081 -UdpPort 28777
-```
+这条命令会按当前策略处理 `防火墙`：
+
+- 放行 `8090/TCP`
+- 放行 `8082/TCP`
+- 放行 `8189/UDP`
+- 清理旧的 `8889/TCP` 外部规则
+- 清理旧的 `28777/UDP` 外部规则
