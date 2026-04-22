@@ -174,6 +174,7 @@ class MockWebSocket {
     this.url = url;
     this.readyState = MockWebSocket.OPEN;
     this.listeners = new Map();
+    this.sentPackets = [];
   }
 
   addEventListener(type, listener) {
@@ -201,7 +202,9 @@ class MockWebSocket {
     this.dispatch("close");
   }
 
-  send() {}
+  send(payload) {
+    this.sentPackets.push(JSON.parse(payload));
+  }
 }
 
 function installAppHarness({
@@ -215,6 +218,7 @@ function installAppHarness({
   enableRtc = false,
   fetchImpl = null,
   rtcGetStatsImpl = null,
+  performanceStepMs = null,
 }) {
   const originalGlobals = new Map();
   for (const key of [
@@ -226,6 +230,7 @@ function installAppHarness({
     "RTCPeerConnection",
     "location",
     "screen",
+    "performance",
   ]) {
     originalGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   }
@@ -349,6 +354,7 @@ function installAppHarness({
   const videoFrameCallbacks = [];
   const fullscreenRequests = [];
   const orientationLocks = [];
+  let syntheticNowMs = 0;
   const frameTimeOrigin = performance.now();
 
   function defaultFetch(url, init = {}) {
@@ -649,6 +655,18 @@ function installAppHarness({
       },
     },
   });
+  if (Number.isFinite(performanceStepMs) && performanceStepMs > 0) {
+    Object.defineProperty(globalThis, "performance", {
+      configurable: true,
+      writable: true,
+      value: {
+        now() {
+          syntheticNowMs += performanceStepMs;
+          return syntheticNowMs;
+        },
+      },
+    });
+  }
 
   return {
     connEl,
@@ -1062,6 +1080,33 @@ test("gameplay drag keeps cancelling document-level touch moves after the finger
   assert.equal(startPrevented, true);
   assert.equal(movePrevented, true);
   assert.equal(endPrevented, true);
+});
+
+test("quick stick flick sends a damped active packet and then a centered release payload", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    performanceStepMs: 16,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stick-flick-release`);
+  await harness.settle();
+
+  harness.leftStickEl.dispatch("pointerdown", { pointerId: 11, clientX: 100, clientY: 100 });
+  harness.leftStickEl.dispatch("pointermove", { pointerId: 11, clientX: 100, clientY: 18 });
+  harness.runAnimationFrame(16);
+  harness.leftStickEl.dispatch("pointerup", { pointerId: 11, clientX: 100, clientY: 100 });
+  harness.runAnimationFrame(32);
+  await harness.settle();
+
+  const inputPackets = harness.webSockets[0].sentPackets.filter((packet) => packet.sticks?.left);
+  const activePacket = inputPackets.find((packet) => packet.sticks.left.ny > 0.01);
+  const releasePacket = inputPackets.at(-1);
+
+  assert.ok(activePacket, "expected one non-zero upward packet");
+  assert.ok(activePacket.sticks.left.ny < 0.95);
+  assert.equal(releasePacket.sticks.left.nx, 0);
+  assert.equal(releasePacket.sticks.left.ny, 0);
 });
 
 test("slot resets when the host changes and when websocket falls back", async (t) => {

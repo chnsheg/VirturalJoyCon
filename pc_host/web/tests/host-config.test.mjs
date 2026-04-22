@@ -147,6 +147,12 @@ test("stick sensitivity helpers clamp, persist, and map higher values to a faste
   assert.ok(getStickResponseExponent(0.9) < getStickResponseExponent(0.2));
 });
 
+test("getStickResponseExponent keeps the slider centered on the xbox-style baseline curve", () => {
+  assert.equal(getStickResponseExponent(0), 1.75);
+  assert.equal(getStickResponseExponent(0.5), 1.45);
+  assert.equal(getStickResponseExponent(1), 1.15);
+});
+
 test("control opacity helpers clamp, persist, and restore transparent button alpha", () => {
   const storage = createMemoryStorage();
 

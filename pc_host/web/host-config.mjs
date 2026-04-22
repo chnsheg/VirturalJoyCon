@@ -140,7 +140,7 @@ export function normalizeControlOpacity(value) {
 
 export function getStickResponseExponent(sensitivity) {
   const normalized = normalizeStickSensitivity(sensitivity);
-  return Number((1.9 - normalized * 0.8).toFixed(3));
+  return Number((1.75 - normalized * 0.6).toFixed(3));
 }
 
 export function loadSavedHostTarget(storage, storageKey = DEFAULT_STORAGE_KEY) {

@@ -1,11 +1,16 @@
 const DEFAULT_STICK_CONFIG = Object.freeze({
-  deadzone: 0.08,
-  antiDeadzone: 0.05,
+  deadzone: 0.13,
   outerDeadzone: 0.02,
-  responseExponent: 1.55,
+  responseExponent: 1.45,
   minCutoff: 1.2,
   beta: 0.35,
   derivativeCutoff: 1.0,
+  engageThreshold: 0.58,
+  releaseThreshold: 0.35,
+  repeatDelayMs: 240,
+  repeatIntervalMs: 100,
+  axisSwitchRatio: 1.25,
+  flickResponseFloor: 0.95,
 });
 
 const SOCKET_OPEN = 1;
@@ -128,28 +133,178 @@ function normalizeVector(vector) {
   };
 }
 
-export function applyRadialResponse(vector, config = DEFAULT_STICK_CONFIG) {
+function scaleVector(vector, magnitude) {
+  if (!Number.isFinite(magnitude) || magnitude <= 0) {
+    return { x: 0, y: 0 };
+  }
+
+  const normalized = normalizeVector(vector);
+  const currentMagnitude = Math.hypot(normalized.x, normalized.y);
+  if (currentMagnitude <= 0) {
+    return { x: 0, y: 0 };
+  }
+
+  const directionX = normalized.x / currentMagnitude;
+  const directionY = normalized.y / currentMagnitude;
+  return {
+    x: directionX * clamp01(magnitude),
+    y: directionY * clamp01(magnitude),
+  };
+}
+
+function roundVector(vector) {
+  return {
+    x: roundAxis(vector.x),
+    y: roundAxis(vector.y),
+  };
+}
+
+function remapRadialMagnitude(magnitude, config) {
+  if (magnitude <= config.deadzone) {
+    return 0;
+  }
+
+  const withoutInnerDeadzone = clamp01((magnitude - config.deadzone) / (1 - config.deadzone));
+  return withoutInnerDeadzone >= (1 - config.outerDeadzone)
+    ? 1
+    : withoutInnerDeadzone / (1 - config.outerDeadzone);
+}
+
+function describeRadialResponse(vector, config = DEFAULT_STICK_CONFIG) {
   const settings = { ...DEFAULT_STICK_CONFIG, ...config };
   const normalized = normalizeVector(vector);
   const magnitude = Math.hypot(normalized.x, normalized.y);
 
   if (magnitude <= settings.deadzone) {
-    return { x: 0, y: 0 };
+    return {
+      linear: { x: 0, y: 0 },
+      state: { x: 0, y: 0 },
+    };
   }
 
-  const directionX = normalized.x / magnitude;
-  const directionY = normalized.y / magnitude;
-  const withoutInnerDeadzone = clamp01((magnitude - settings.deadzone) / (1 - settings.deadzone));
-  const boosted = withoutInnerDeadzone >= (1 - settings.outerDeadzone)
-    ? 1
-    : withoutInnerDeadzone / (1 - settings.outerDeadzone);
-  const curvedMagnitude = settings.antiDeadzone
-    + (1 - settings.antiDeadzone) * Math.pow(clamp01(boosted), settings.responseExponent);
+  const remappedMagnitude = remapRadialMagnitude(magnitude, settings);
+  const antiDeadzone = clamp01(settings.antiDeadzone ?? 0);
+  const curvedMagnitude = antiDeadzone
+    + (1 - antiDeadzone) * Math.pow(remappedMagnitude, settings.responseExponent);
 
+  const linear = scaleVector(normalized, remappedMagnitude);
   return {
-    x: roundAxis(directionX * curvedMagnitude),
-    y: roundAxis(directionY * curvedMagnitude),
+    linear: roundVector(linear),
+    state: roundVector(scaleVector(normalized, curvedMagnitude)),
   };
+}
+
+export function applyRadialResponse(vector, config = DEFAULT_STICK_CONFIG) {
+  return describeRadialResponse(vector, config).state;
+}
+
+function applyTouchResponseAssist(raw, filtered, previousRawMagnitude, config = DEFAULT_STICK_CONFIG) {
+  const rawMagnitude = Math.hypot(raw.x, raw.y);
+  const filteredMagnitude = Math.hypot(filtered.x, filtered.y);
+
+  if (rawMagnitude < previousRawMagnitude && filteredMagnitude > rawMagnitude) {
+    return scaleVector(filtered, rawMagnitude);
+  }
+
+  if (rawMagnitude > config.deadzone) {
+    const floorMagnitude = Math.min(1, rawMagnitude * config.flickResponseFloor);
+    if (filteredMagnitude < floorMagnitude) {
+      return scaleVector(filteredMagnitude > 0 ? filtered : raw, floorMagnitude);
+    }
+  }
+
+  return normalizeVector(filtered);
+}
+
+function pickDominantDirection(vector, previousDirection, axisSwitchRatio) {
+  const absX = Math.abs(vector.x);
+  const absY = Math.abs(vector.y);
+
+  if (absX === 0 && absY === 0) {
+    return null;
+  }
+
+  if (previousDirection === "up" || previousDirection === "down") {
+    if (absX > absY * axisSwitchRatio) {
+      return vector.x >= 0 ? "right" : "left";
+    }
+    return vector.y >= 0 ? "up" : "down";
+  }
+
+  if (previousDirection === "left" || previousDirection === "right") {
+    if (absY > absX * axisSwitchRatio) {
+      return vector.y >= 0 ? "up" : "down";
+    }
+    return vector.x >= 0 ? "right" : "left";
+  }
+
+  return absY >= absX
+    ? (vector.y >= 0 ? "up" : "down")
+    : (vector.x >= 0 ? "right" : "left");
+}
+
+class DirectionalActuationGate {
+  constructor(config) {
+    this.config = config;
+    this.reset();
+  }
+
+  setConfig(config) {
+    this.config = config;
+  }
+
+  reset() {
+    this.direction = null;
+    this.engaged = false;
+    this.engagedAt = -Infinity;
+    this.lastRepeatAt = -Infinity;
+  }
+
+  sample(vector, now) {
+    const nextDirection = pickDominantDirection(
+      vector,
+      this.direction,
+      this.config.axisSwitchRatio,
+    );
+    const nextMagnitude = Math.max(Math.abs(vector.x), Math.abs(vector.y));
+    const shouldEngage = Boolean(nextDirection) && nextMagnitude >= this.config.engageThreshold;
+    const shouldRelease = !nextDirection || nextMagnitude <= this.config.releaseThreshold;
+
+    let justPressed = false;
+    let justReleased = false;
+
+    if (!this.engaged && shouldEngage) {
+      this.engaged = true;
+      this.direction = nextDirection;
+      this.engagedAt = now;
+      this.lastRepeatAt = now;
+      justPressed = true;
+    } else if (this.engaged && shouldRelease) {
+      this.engaged = false;
+      this.direction = null;
+      justReleased = true;
+    } else if (this.engaged && nextDirection) {
+      this.direction = nextDirection;
+    }
+
+    let repeatReady = false;
+    if (
+      this.engaged
+      && (now - this.engagedAt) >= this.config.repeatDelayMs
+      && (now - this.lastRepeatAt) >= this.config.repeatIntervalMs
+    ) {
+      repeatReady = true;
+      this.lastRepeatAt = now;
+    }
+
+    return {
+      direction: this.direction,
+      engaged: this.engaged,
+      justPressed,
+      justReleased,
+      repeatReady,
+    };
+  }
 }
 
 export class AdaptiveStickProcessor {
@@ -157,15 +312,26 @@ export class AdaptiveStickProcessor {
     this.baseConfig = { ...DEFAULT_STICK_CONFIG, ...config };
     this.config = { ...this.baseConfig };
     this.filter = new TwoAxisOneEuroFilter(this.config);
+    this.gate = new DirectionalActuationGate(this.config);
+    this.lastRawMagnitude = 0;
   }
 
   reset() {
     this.filter.reset();
+    this.gate.reset();
+    this.lastRawMagnitude = 0;
     return {
       raw: { x: 0, y: 0 },
       filtered: { x: 0, y: 0 },
       state: { x: 0, y: 0 },
       display: { x: 0, y: 0 },
+      navigation: {
+        direction: null,
+        engaged: false,
+        justPressed: false,
+        justReleased: false,
+        repeatReady: false,
+      },
     };
   }
 
@@ -175,6 +341,7 @@ export class AdaptiveStickProcessor {
         ...this.baseConfig,
         responseExponent,
       };
+      this.gate.setConfig(this.config);
     }
 
     return this.config;
@@ -183,15 +350,16 @@ export class AdaptiveStickProcessor {
   sampleVector({ x, y, now }) {
     const raw = normalizeVector({ x, y });
     const filtered = this.filter.filter(raw, now);
-    const state = applyRadialResponse(raw, this.config);
+    const assisted = applyTouchResponseAssist(raw, filtered, this.lastRawMagnitude, this.config);
+    this.lastRawMagnitude = Math.hypot(raw.x, raw.y);
+    const radial = describeRadialResponse(assisted, this.config);
+    const navigation = this.gate.sample(radial.linear, now);
     return {
       raw,
-      filtered: {
-        x: roundAxis(filtered.x),
-        y: roundAxis(filtered.y),
-      },
-      state,
-      display: state,
+      filtered: roundVector(filtered),
+      state: radial.state,
+      display: radial.state,
+      navigation,
     };
   }
 }

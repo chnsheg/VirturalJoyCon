@@ -68,6 +68,71 @@ test("AdaptiveStickProcessor reacts to a quick menu flick after a centered touch
   assert.equal(output.state.x, 0);
 });
 
+test("AdaptiveStickProcessor uses filtered vectors for final state instead of the raw spike", () => {
+  const processor = new AdaptiveStickProcessor({
+    deadzone: 0.13,
+    outerDeadzone: 0.02,
+    responseExponent: 1.45,
+    minCutoff: 1.2,
+    beta: 0.35,
+    derivativeCutoff: 1.0,
+  });
+
+  processor.sampleVector({ x: 0, y: 0, now: 0 });
+  const output = processor.sampleVector({ x: 0.92, y: 0, now: 8 });
+  const rawState = applyRadialResponse(
+    { x: 0.92, y: 0 },
+    { deadzone: 0.13, outerDeadzone: 0.02, responseExponent: 1.45 },
+  );
+
+  assert.ok(output.filtered.x < output.raw.x);
+  assert.ok(output.state.x < rawState.x);
+  assert.equal(output.state.y, 0);
+});
+
+test("AdaptiveStickProcessor clears actuation quickly when the thumb flicks back to center", () => {
+  const processor = new AdaptiveStickProcessor({
+    deadzone: 0.13,
+    outerDeadzone: 0.02,
+    responseExponent: 1.45,
+    engageThreshold: 0.58,
+    releaseThreshold: 0.35,
+    repeatDelayMs: 240,
+    repeatIntervalMs: 100,
+    axisSwitchRatio: 1.25,
+  });
+
+  processor.sampleVector({ x: 0, y: 0, now: 0 });
+  const engaged = processor.sampleVector({ x: 0, y: 0.94, now: 16 });
+  const released = processor.sampleVector({ x: 0, y: 0.04, now: 80 });
+
+  assert.equal(engaged.navigation?.direction, "up");
+  assert.equal(engaged.navigation?.justPressed, true);
+  assert.equal(engaged.navigation?.repeatReady, false);
+  assert.equal(released.navigation?.engaged, false);
+  assert.equal(released.state.x, 0);
+  assert.equal(released.state.y, 0);
+});
+
+test("AdaptiveStickProcessor keeps the previous dominant axis through small diagonal jitter", () => {
+  const processor = new AdaptiveStickProcessor({
+    deadzone: 0.13,
+    outerDeadzone: 0.02,
+    responseExponent: 1.45,
+    engageThreshold: 0.58,
+    releaseThreshold: 0.35,
+    axisSwitchRatio: 1.25,
+  });
+
+  processor.sampleVector({ x: 0, y: 0, now: 0 });
+  const first = processor.sampleVector({ x: 0.16, y: 0.88, now: 16 });
+  const second = processor.sampleVector({ x: 0.29, y: 0.8, now: 48 });
+
+  assert.equal(first.navigation?.direction, "up");
+  assert.equal(second.navigation?.direction, "up");
+  assert.ok(Math.abs(second.state.x) < Math.abs(second.state.y));
+});
+
 test("AdaptiveStickProcessor recenters immediately after a sustained drag returns to center", () => {
   const processor = new AdaptiveStickProcessor({
     deadzone: 0.08,
