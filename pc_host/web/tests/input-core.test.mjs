@@ -50,6 +50,45 @@ test("AdaptiveStickProcessor keeps upward motion upward under jitter", () => {
   }
 });
 
+test("AdaptiveStickProcessor reacts to a quick menu flick after a centered touch", () => {
+  const processor = new AdaptiveStickProcessor({
+    deadzone: 0.08,
+    antiDeadzone: 0.05,
+    outerDeadzone: 0.02,
+    responseExponent: 1.35,
+    minCutoff: 1.2,
+    beta: 0.35,
+    derivativeCutoff: 1.0,
+  });
+
+  processor.sampleVector({ x: 0, y: 0, now: 0 });
+  const output = processor.sampleVector({ x: 0, y: 0.32, now: 12 });
+
+  assert.ok(output.state.y > 0.16);
+  assert.equal(output.state.x, 0);
+});
+
+test("AdaptiveStickProcessor recenters immediately after a sustained drag returns to center", () => {
+  const processor = new AdaptiveStickProcessor({
+    deadzone: 0.08,
+    antiDeadzone: 0.05,
+    outerDeadzone: 0.02,
+    responseExponent: 1.35,
+    minCutoff: 1.2,
+    beta: 0.35,
+    derivativeCutoff: 1.0,
+  });
+
+  processor.sampleVector({ x: 0, y: 0, now: 0 });
+  processor.sampleVector({ x: 0, y: 0.7, now: 16 });
+  processor.sampleVector({ x: 0, y: 0.7, now: 32 });
+  const output = processor.sampleVector({ x: 0, y: 0, now: 48 });
+
+  assert.equal(output.state.y, 0);
+  assert.equal(output.state.x, 0);
+  assert.equal(output.display.y, 0);
+});
+
 test("higher stick sensitivity boosts small input and keeps full deflection capped", () => {
   const softExponent = 1.85;
   const quickExponent = 1.15;
@@ -114,7 +153,7 @@ test("LatestStateTransmitter only sends dirty newest state and respects websocke
   });
 
   transmitter.markDirty();
-  assert.equal(transmitter.tryFlush(0), true);
+  assert.equal(transmitter.tryFlush(0), "ws");
   assert.equal(sent.length, 1);
   assert.equal(sent[0].seq, 1);
 
@@ -125,10 +164,39 @@ test("LatestStateTransmitter only sends dirty newest state and respects websocke
   assert.equal(sent.length, 1);
 
   socket.bufferedAmount = 0;
-  assert.equal(transmitter.tryFlush(16), true);
+  assert.equal(transmitter.tryFlush(16), "ws");
   assert.equal(sent.length, 2);
   assert.equal(sent[1].seq, 2);
   assert.equal(sent[1].sticks.left.ny, 1);
+});
+
+test("LatestStateTransmitter prefers the rtc input datachannel when it is open", () => {
+  const sent = [];
+  const dataChannel = {
+    readyState: "open",
+    bufferedAmount: 0,
+    send(payload) {
+      sent.push(JSON.parse(payload));
+    },
+  };
+
+  const transmitter = new LatestStateTransmitter({
+    getDataChannel: () => dataChannel,
+    getSocket: () => null,
+    readState: () => ({
+      device_id: "phone-a",
+      client_session_id: "client-a",
+      input_stream_id: "stream-a",
+      buttons: { a: true },
+      sticks: { left: { nx: 0, ny: 0 }, right: { nx: 0, ny: 0 } },
+      triggers: { lt: 0, rt: 0 },
+    }),
+  });
+
+  transmitter.markDirty(true);
+  assert.equal(transmitter.tryFlush(0), "datachannel");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].buttons.a, true);
 });
 
 test("LatencyTracker smooths ping samples and expires stale values", () => {

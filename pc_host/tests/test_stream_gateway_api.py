@@ -1,12 +1,16 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from aiohttp.test_utils import AioHTTPTestCase
+from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 import stream_gateway
 from stream_gateway import create_stream_app
 from streaming.control_peer import ControlPeerFactory
 from streaming.room_state import RoomRegistry
+from web_host import WebGamepadHub
 
 
 class FakeControlPeerFactory:
@@ -20,6 +24,39 @@ class FakeControlPeerFactory:
 
     async def close_all(self) -> None:
         self.close_all_calls += 1
+
+
+class FakeInputSession:
+    def __init__(self) -> None:
+        self.user_index = 1
+        self.last_seen = 0.0
+        self.gamepad = object()
+
+    def accepts_packet(self, packet: dict) -> bool:
+        return True
+
+
+class FakeInputPool:
+    def __init__(self) -> None:
+        self.sessions = {}
+        self.released: list[str] = []
+
+    def get_or_create(self, session_key, endpoint):
+        session = FakeInputSession()
+        self.sessions[session_key] = session
+        return session
+
+    def release(self, session_key: str) -> None:
+        self.released.append(session_key)
+        self.sessions.pop(session_key, None)
+
+
+class FakeInputMapper:
+    def __init__(self) -> None:
+        self.packets: list[dict] = []
+
+    def apply_packet(self, gamepad, packet: dict) -> None:
+        self.packets.append(packet)
 
 
 class StreamGatewayCliTests(unittest.TestCase):
@@ -44,6 +81,46 @@ class RoomRegistrySnapshotTests(unittest.TestCase):
 
         self.assertEqual(snapshot, {"room_id": "missing-room", "players": []})
         self.assertEqual(registry._rooms, {})
+
+
+class WhepSdpFilterTests(unittest.TestCase):
+    def test_filter_whep_answer_keeps_only_candidates_matching_the_requested_host(self) -> None:
+        answer = "\r\n".join(
+            [
+                "v=0",
+                "o=- 0 0 IN IP4 127.0.0.1",
+                "s=-",
+                "t=0 0",
+                "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
+                "a=candidate:2 1 UDP 2122252543 192.168.0.112 8189 typ host",
+                "a=end-of-candidates",
+                "",
+            ]
+        )
+
+        filtered = stream_gateway.filter_whep_answer_for_host(answer, preferred_host="192.168.0.112")
+
+        self.assertIn("192.168.0.112 8189 typ host", filtered)
+        self.assertNotIn("10.0.0.7 8189 typ host", filtered)
+        self.assertIn("a=end-of-candidates", filtered)
+
+    def test_filter_whep_answer_rewrites_host_candidates_when_requested_host_is_missing(self) -> None:
+        answer = "\r\n".join(
+            [
+                "v=0",
+                "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
+                "a=candidate:2 1 UDP 2122252543 192.168.129.24 8189 typ host",
+                "a=end-of-candidates",
+                "",
+            ]
+        )
+
+        filtered = stream_gateway.filter_whep_answer_for_host(answer, preferred_host="192.168.0.112")
+
+        self.assertIn("192.168.0.112 8189 typ host", filtered)
+        self.assertNotIn("10.0.0.7 8189 typ host", filtered)
+        self.assertNotIn("192.168.129.24 8189 typ host", filtered)
+        self.assertIn("a=end-of-candidates", filtered)
 
 
 class FakeChannel:
@@ -157,6 +234,11 @@ class ControlPeerFactoryTests(unittest.TestCase):
 
         self.assertFalse(ControlPeerFactory.accepts_control_channel(channel))
 
+    def test_accepts_input_channel_for_unordered_unreliable_transport(self) -> None:
+        channel = FakeChannel(label="joycon.input.v1", ordered=False, max_retransmits=0)
+
+        self.assertTrue(ControlPeerFactory.accepts_input_channel(channel))
+
     def test_configure_control_channel_registers_ping_pong_for_supported_channel(self) -> None:
         factory = ControlPeerFactory()
         channel = FakeChannel()
@@ -178,6 +260,19 @@ class ControlPeerFactoryTests(unittest.TestCase):
         self.assertFalse(configured)
         self.assertEqual(channel.close_calls, 1)
         self.assertNotIn("message", channel.handlers)
+
+    def test_configure_input_channel_applies_latest_state_packets(self) -> None:
+        applied_packets: list[dict] = []
+        factory = ControlPeerFactory(input_packet_handler=applied_packets.append)
+        channel = FakeChannel(label="joycon.input.v1", ordered=False, max_retransmits=0)
+
+        configured = factory.configure_input_channel(channel)
+
+        self.assertTrue(configured)
+        self.assertEqual(channel.close_calls, 0)
+        self.assertIn("message", channel.handlers)
+        channel.handlers["message"](json.dumps({"client_session_id": "browser-01", "buttons": {"a": True}}))
+        self.assertEqual(applied_packets, [{"client_session_id": "browser-01", "buttons": {"a": True}}])
 
 
 class ControlPeerFactoryLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -301,10 +396,156 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.now = [100.0]
         self.registry = RoomRegistry(max_seats=4, seat_hold_seconds=10.0, now_fn=lambda: self.now[0])
         self.control_peer_factory = FakeControlPeerFactory()
+        self.input_pool = FakeInputPool()
+        self.input_mapper = FakeInputMapper()
+        self.settings_temp_dir = tempfile.TemporaryDirectory()
+        self.settings_path = Path(self.settings_temp_dir.name) / "stream_settings.json"
+        self.active_settings_path = Path(self.settings_temp_dir.name) / "stream_settings.active.json"
         return create_stream_app(
             room_registry=self.registry,
             control_peer_factory=self.control_peer_factory,
+            input_hub=WebGamepadHub(pool=self.input_pool, mapper=self.input_mapper),
+            stream_settings_path=self.settings_path,
+            active_stream_settings_path=self.active_settings_path,
         )
+
+    def tearDown(self) -> None:
+        try:
+            self.settings_temp_dir.cleanup()
+        finally:
+            super().tearDown()
+
+    async def test_input_options_and_http_input_are_available_on_the_stream_gateway_port(self) -> None:
+        options_response = await self.client.options(
+            "/input",
+            headers={
+                "Origin": "http://controller.local:8090",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        post_response = await self.client.post(
+            "/input",
+            headers={
+                "Origin": "http://controller.local:8090",
+                "Content-Type": "application/json",
+            },
+            json={
+                "client_session_id": "browser-01",
+                "buttons": {"a": True},
+                "sticks": {
+                    "left": {"nx": 0.0, "ny": 0.0, "processed": True},
+                    "right": {"nx": 0.0, "ny": 0.0, "processed": True},
+                },
+                "triggers": {"lt": 0.0, "rt": 0.0},
+            },
+        )
+        payload = await post_response.json()
+
+        self.assertEqual(options_response.status, 204)
+        self.assertEqual(options_response.headers["Access-Control-Allow-Origin"], "*")
+        self.assertIn("POST", options_response.headers["Access-Control-Allow-Methods"])
+        self.assertEqual(post_response.status, 200)
+        self.assertEqual(post_response.headers["Access-Control-Allow-Origin"], "*")
+        self.assertEqual(payload, {"ok": True, "slot": 1})
+        self.assertEqual(len(self.input_mapper.packets), 1)
+
+    async def test_media_whep_proxy_filters_answer_candidates_to_the_requested_gateway_host(self) -> None:
+        async def whep_offer_handler(offer_sdp: str) -> tuple[int, str, str]:
+            self.assertEqual(offer_sdp, "test-offer")
+            return (
+                200,
+                "\r\n".join(
+                    [
+                        "v=0",
+                        "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
+                        "a=candidate:2 1 UDP 2122252543 192.168.0.112 8189 typ host",
+                        "",
+                    ]
+                ),
+                "application/sdp",
+            )
+
+        app = create_stream_app(
+            room_registry=self.registry,
+            control_peer_factory=self.control_peer_factory,
+            input_hub=WebGamepadHub(pool=self.input_pool, mapper=self.input_mapper),
+            whep_offer_handler=whep_offer_handler,
+        )
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            response = await client.post(
+                "/media/whep",
+                data="test-offer",
+                headers={
+                    "Host": "192.168.0.112:8082",
+                    "Content-Type": "application/sdp",
+                },
+            )
+            answer = await response.text()
+
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+            self.assertIn("192.168.0.112 8189 typ host", answer)
+            self.assertNotIn("10.0.0.7 8189 typ host", answer)
+        finally:
+            await client.close()
+
+    async def test_media_whep_proxy_rewrites_stale_answer_candidates_to_the_requested_gateway_host(self) -> None:
+        async def whep_offer_handler(offer_sdp: str) -> tuple[int, str, str]:
+            self.assertEqual(offer_sdp, "test-offer")
+            return (
+                200,
+                "\r\n".join(
+                    [
+                        "v=0",
+                        "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
+                        "a=candidate:2 1 UDP 2122252543 192.168.129.24 8189 typ host",
+                        "a=end-of-candidates",
+                        "",
+                    ]
+                ),
+                "application/sdp",
+            )
+
+        app = create_stream_app(
+            room_registry=self.registry,
+            control_peer_factory=self.control_peer_factory,
+            input_hub=WebGamepadHub(pool=self.input_pool, mapper=self.input_mapper),
+            whep_offer_handler=whep_offer_handler,
+        )
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            response = await client.post(
+                "/media/whep",
+                data="test-offer",
+                headers={
+                    "Host": "10.126.126.2:8082",
+                    "Content-Type": "application/sdp",
+                },
+            )
+            answer = await response.text()
+
+            self.assertEqual(response.status, 200)
+            self.assertIn("10.126.126.2 8189 typ host", answer)
+            self.assertNotIn("10.0.0.7 8189 typ host", answer)
+            self.assertNotIn("192.168.129.24 8189 typ host", answer)
+            self.assertIn("a=end-of-candidates", answer)
+        finally:
+            await client.close()
+
+    async def test_ws_endpoint_is_available_on_the_stream_gateway_port(self) -> None:
+        ws = await self.client.ws_connect("/ws")
+        await ws.send_json({"type": "ping", "client_sent_at_ms": 123})
+        message = await ws.receive_json()
+        await ws.close()
+
+        self.assertEqual(message["type"], "pong")
+        self.assertEqual(message["client_sent_at_ms"], 123)
 
     async def test_join_returns_player_seat_and_reconnect_token(self) -> None:
         response = await self.client.post(
@@ -631,6 +872,114 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertIn("POST", options_response.headers["Access-Control-Allow-Methods"])
         self.assertIn("OPTIONS", options_response.headers["Access-Control-Allow-Methods"])
         self.assertEqual(error_response.headers["Access-Control-Allow-Origin"], "*")
+
+    async def test_stream_settings_get_returns_the_default_profile_when_none_has_been_saved(self) -> None:
+        response = await self.client.get("/api/stream/settings")
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            payload,
+            {
+                "ok": True,
+                "width": 1280,
+                "height": 720,
+                "fps": 60,
+                "bitrateKbps": 6000,
+                "applied": False,
+            },
+        )
+
+    async def test_stream_settings_get_reports_applied_when_the_active_profile_matches(self) -> None:
+        self.settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+        self.active_settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+
+        response = await self.client.get("/api/stream/settings")
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["applied"], True)
+
+    async def test_stream_settings_post_persists_the_validated_profile(self) -> None:
+        response = await self.client.post(
+            "/api/stream/settings",
+            json={
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["width"], 1920)
+        self.assertEqual(payload["height"], 1080)
+        self.assertEqual(payload["fps"], 60)
+        self.assertEqual(payload["bitrateKbps"], 9000)
+        self.assertEqual(payload["applied"], False)
+        self.assertTrue(self.settings_path.exists())
+        self.assertEqual(
+            json.loads(self.settings_path.read_text(encoding="utf-8")),
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+
+    async def test_stream_settings_post_reports_applied_when_the_active_profile_already_matches(self) -> None:
+        self.active_settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 60, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+
+        response = await self.client.post(
+            "/api/stream/settings",
+            json={
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["applied"], True)
+
+    async def test_stream_settings_post_normalizes_even_dimensions_and_bitrate_step(self) -> None:
+        response = await self.client.post(
+            "/api/stream/settings",
+            json={
+                "width": 1981,
+                "height": 1079,
+                "fps": 61,
+                "bitrateKbps": 6055,
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            payload,
+            {
+                "ok": True,
+                "width": 1980,
+                "height": 1078,
+                "fps": 61,
+                "bitrateKbps": 6100,
+                "applied": False,
+            },
+        )
 
 
 if __name__ == "__main__":

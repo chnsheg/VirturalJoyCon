@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 .pc_host_tmp/
 pc_host/logs/
+pc_host/.runtime/
 .vscode/
 superpowers/
 .superpowers/
