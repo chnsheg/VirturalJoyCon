@@ -40,6 +40,13 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1
 
 这个脚本会检查运行环境、安装 Python 依赖、检查防火墙、启动控制网关、启动 MediaMTX、启动 FFmpeg 推流器，并启动静态网页服务器。
 
+启动成功后，你会看到 4 个长期运行的服务窗口：
+
+- `stream_gateway.py`，监听 `8082/TCP`
+- `MediaMTX`，提供 `8889/TCP` 的 WHEP / WebRTC 媒体入口
+- `FFmpeg` 推流器，把桌面画面推到本机 `rtsp://127.0.0.1:8554/game`
+- `python -m http.server`，监听 `8090/TCP` 托管手机访问页面
+
 重复执行一键启动脚本时，它会先停止自己这套栈上一次留下的旧进程，再重新启动；如果你不想自动重启旧进程，可以加 `-NoRestartExisting`。
 
 如果只想预览启动流程，不真正启动服务：
@@ -81,6 +88,27 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1 -DryRun -SkipDependencyIns
 本机内部链路会用到 `8554/TCP`、`9997/TCP` 和 `28777/UDP`，但手机访问不需要直接连接这些端口。
 
 当前脚本不会额外开放一大段动态 UDP 端口，也不会添加程序级 UDP 特殊规则。控制通道仍由页面和 Python 网关通过 WebRTC DataChannel 协商，端口开放方式回到 2026-04-22 16:46 的模型。
+
+## 手动启动兜底
+
+如果你暂时不想用一键启动，或者需要单独排查某一段链路，可以在 `pc_host` 目录手动开 4 个终端：
+
+```powershell
+python .\stream_gateway.py --host 0.0.0.0 --port 8082
+```
+
+```powershell
+pwsh .\scripts\start_media_stack.ps1
+```
+
+```powershell
+pwsh .\scripts\start_stream_publisher.ps1
+```
+
+```powershell
+cd .\web
+python -m http.server 8090 --bind 0.0.0.0
+```
 
 ## 手动修复防火墙
 

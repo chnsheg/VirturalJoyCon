@@ -12,7 +12,7 @@ param(
     [int]$MaxDevices = 4,
     [string]$MediaMtxExe = "mediamtx.exe",
     [string]$FfmpegExe = "ffmpeg.exe",
-    [ValidateSet("rtsp", "rtsp_udp", "whip")]
+    [ValidateSet("rtsp", "whip")]
     [string]$PublishTransport = "rtsp",
     [string]$PublishUrl = "",
     [string]$VideoDevice = "gfxcapture",
@@ -336,6 +336,114 @@ function Test-CommandLineContains {
     return $true
 }
 
+function Get-ManagedPortOwnerProcesses {
+    param(
+        [int]$GatewayPort,
+        [int]$FrontendPort,
+        [object[]]$AllProcesses
+    )
+
+    $processIds = New-Object System.Collections.Generic.HashSet[int]
+    try {
+        @(Get-NetTCPConnection -State Listen -LocalPort $GatewayPort, $FrontendPort, 8554, 8889, 9997 -ErrorAction SilentlyContinue) |
+            ForEach-Object {
+                if ($_.OwningProcess) {
+                    [void]$processIds.Add([int]$_.OwningProcess)
+                }
+            }
+    } catch {}
+
+    try {
+        @(Get-NetUDPEndpoint -LocalPort 8189 -ErrorAction SilentlyContinue) |
+            ForEach-Object {
+                if ($_.OwningProcess) {
+                    [void]$processIds.Add([int]$_.OwningProcess)
+                }
+            }
+    } catch {}
+
+    if ($processIds.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        $AllProcesses | Where-Object {
+            $_.ProcessId -in $processIds
+        }
+    )
+}
+
+function Get-ManagedSiblingChildProcesses {
+    param(
+        [object[]]$BaseProcesses,
+        [object[]]$AllProcesses
+    )
+
+    $baseParentIds = @(
+        $BaseProcesses |
+            Where-Object { $_.ParentProcessId -gt 0 } |
+            Select-Object -ExpandProperty ParentProcessId -Unique
+    )
+    if ($baseParentIds.Count -eq 0) {
+        return @()
+    }
+
+    $baseParentShells = @(
+        $AllProcesses | Where-Object {
+            $_.ProcessId -in $baseParentIds -and $_.Name -match '^(pwsh|powershell)\.exe$'
+        }
+    )
+    if ($baseParentShells.Count -eq 0) {
+        return @()
+    }
+
+    $shellGroupParentIds = @(
+        $baseParentShells |
+            Where-Object { $_.ParentProcessId -gt 0 } |
+            Select-Object -ExpandProperty ParentProcessId -Unique
+    )
+    if ($shellGroupParentIds.Count -eq 0) {
+        return @()
+    }
+
+    $siblingShellIds = @(
+        $AllProcesses | Where-Object {
+            $_.ParentProcessId -in $shellGroupParentIds -and $_.Name -match '^(pwsh|powershell)\.exe$'
+        } | Select-Object -ExpandProperty ProcessId -Unique
+    )
+    if ($siblingShellIds.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        $AllProcesses | Where-Object {
+            $_.ParentProcessId -in $siblingShellIds -and $_.Name -match '^(python|ffmpeg|mediamtx)\.exe$'
+        }
+    )
+}
+
+function Get-ManagedParentShellProcesses {
+    param(
+        [object[]]$BaseProcesses,
+        [object[]]$AllProcesses
+    )
+
+    $parentIds = @(
+        $BaseProcesses |
+            Where-Object { $_.ParentProcessId -gt 0 } |
+            Select-Object -ExpandProperty ParentProcessId -Unique
+    )
+    if ($parentIds.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        $AllProcesses | Where-Object {
+            $_.ProcessId -in $parentIds -and $_.Name -match '^(pwsh|powershell)\.exe$'
+        }
+    )
+}
+
 function Get-ExistingManagedStackProcesses {
     param(
         [int]$GatewayPort,
@@ -374,6 +482,12 @@ function Get-ExistingManagedStackProcesses {
             }
         }
     }
+
+    $portOwnerProcesses = @(Get-ManagedPortOwnerProcesses -GatewayPort $GatewayPort -FrontendPort $FrontendPort -AllProcesses $processes)
+    $matches += $portOwnerProcesses
+
+    $matches += @(Get-ManagedSiblingChildProcesses -BaseProcesses $portOwnerProcesses -AllProcesses $processes)
+    $matches += @(Get-ManagedParentShellProcesses -BaseProcesses $matches -AllProcesses $processes)
 
     return @($matches | Sort-Object ProcessId -Unique)
 }
@@ -438,7 +552,18 @@ function Stop-ExistingManagedStackProcesses {
         return
     }
 
-    foreach ($process in $existingProcesses) {
+    $orderedProcesses = @(
+        $existingProcesses | Sort-Object @{ Expression = {
+                    if ($_.Name -match '^(pwsh|powershell)\.exe$') {
+                        1
+                    } else {
+                        0
+                    }
+                }
+            }, ProcessId
+    )
+
+    foreach ($process in $orderedProcesses) {
         Write-Note "Stopping existing managed process: $($process.Name)#$($process.ProcessId)"
         Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
     }
@@ -781,7 +906,7 @@ $lanAddresses = Get-PrivateLanAddresses
 if ($lanAddresses.Count -eq 0) {
     Write-Note "No private LAN IPv4 address detected. Open the frontend with this PC's reachable LAN IPv4 once you know it."
 } else {
-    Write-Host "" 
+    Write-Host ""
     Write-Host "Phone access:" -ForegroundColor Green
     foreach ($address in $lanAddresses) {
         Write-Host "  Frontend: http://$($address.IPAddress):$FrontendPort" -ForegroundColor Green
