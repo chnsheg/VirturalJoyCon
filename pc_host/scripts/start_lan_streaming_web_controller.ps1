@@ -255,7 +255,8 @@ function Get-MissingFirewallRules {
     $expectations = @(
         "JoyCon-Web-$GatewayPort",
         "JoyCon-Frontend-$FrontendPort",
-        "JoyCon-WebRTC-UDP-8189"
+        "JoyCon-WebRTC-UDP-8189",
+        "JoyCon-WebRTC-Control-UDP"
     )
 
     return @($expectations | Where-Object { -not (Test-FirewallRuleExists -DisplayName $_) })
@@ -479,7 +480,7 @@ if (-not $SkipFirewallCheck) {
     $staleFirewallRules = @(Get-StaleFirewallRules -LegacyUdpPort $LegacyUdpPort)
     $needsFirewallRepair = ($missingFirewallRules.Count -gt 0) -or ($staleFirewallRules.Count -gt 0)
     if (-not $needsFirewallRepair) {
-        Write-Ok "Firewall rules already cover frontend, gateway, and WebRTC media access"
+        Write-Ok "Firewall rules already cover frontend, gateway, WebRTC media, and WebRTC DataChannel access"
     } elseif ($DryRun) {
         if ($missingFirewallRules.Count -gt 0) {
             Write-Note "Missing firewall rules in DryRun: $($missingFirewallRules -join ', ')"
@@ -493,7 +494,7 @@ if (-not $SkipFirewallCheck) {
             throw "Firewall rules need repair: $($firewallProblems -join ', '). Re-run this script as Administrator."
         }
 
-        & $script:ShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script:FixNetworkAccessScript -HttpPort $GatewayPort -FrontendPort $FrontendPort -UdpPort $LegacyUdpPort -EnableWebRtcMedia -SkipUdp
+        & $script:ShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script:FixNetworkAccessScript -HttpPort $GatewayPort -FrontendPort $FrontendPort -UdpPort $LegacyUdpPort -WebRtcControlProgram $python.FilePath -EnableWebRtcMedia -SkipUdp
         if ($LASTEXITCODE -ne 0) {
             throw "fix_network_access.ps1 failed with exit code $LASTEXITCODE"
         }

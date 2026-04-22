@@ -101,7 +101,7 @@ function netsh {{
 function Out-Null {{
     process {{ $_ }}
 }}
-& '{script_path}' -HttpPort 8082 -FrontendPort 8090 -EnableWebRtcMedia -SkipUdp
+& '{script_path}' -HttpPort 8082 -FrontendPort 8090 -EnableWebRtcMedia -WebRtcControlProgram 'C:\\Python312\\python.exe' -SkipUdp
 """
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", command],
@@ -121,6 +121,22 @@ function Out-Null {{
         )
         self.assertIn(
             'NETSH:advfirewall firewall add rule name=JoyCon-WebRTC-UDP-8189',
+            result.stdout,
+        )
+        self.assertIn(
+            'NETSH:advfirewall firewall add rule name=JoyCon-WebRTC-Control-UDP',
+            result.stdout,
+        )
+        self.assertIn(
+            'program=C:\\Python312\\python.exe',
+            result.stdout,
+        )
+        self.assertIn(
+            'protocol=UDP',
+            result.stdout,
+        )
+        self.assertIn(
+            'remoteip=localsubnet',
             result.stdout,
         )
         self.assertIn(

@@ -433,7 +433,12 @@ def create_stream_app(
             status = 409 if reason in {"bad_reconnect_token", "spectator_cannot_control"} else 400
             return cors_json_response({"ok": False, "reason": reason}, status=status)
 
-        return cors_json_response(answer)
+        filtered_answer = dict(answer)
+        filtered_answer["sdp"] = filter_whep_answer_for_host(
+            str(answer.get("sdp", "")),
+            preferred_host=request.host,
+        )
+        return cors_json_response(filtered_answer)
 
     async def handle_media_whep(request: web.Request) -> web.Response:
         offer_sdp = await request.text()

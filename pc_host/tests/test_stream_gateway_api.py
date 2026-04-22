@@ -14,13 +14,14 @@ from web_host import WebGamepadHub
 
 
 class FakeControlPeerFactory:
-    def __init__(self) -> None:
+    def __init__(self, answer_sdp: str = "fake-answer") -> None:
         self.calls: list[dict[str, str]] = []
         self.close_all_calls = 0
+        self.answer_sdp = answer_sdp
 
     async def answer_offer(self, offer_sdp: str, offer_type: str = "offer") -> dict:
         self.calls.append({"offer_sdp": offer_sdp, "offer_type": offer_type})
-        return {"sdp": "fake-answer", "type": "answer"}
+        return {"sdp": self.answer_sdp, "type": "answer"}
 
     async def close_all(self) -> None:
         self.close_all_calls += 1
@@ -787,6 +788,46 @@ class StreamGatewayApiTests(AioHTTPTestCase):
             [{"offer_sdp": "fake-offer", "offer_type": "offer"}],
         )
         self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
+
+    async def test_control_offer_filters_answer_candidates_to_the_requested_gateway_host(self) -> None:
+        self.control_peer_factory.answer_sdp = (
+            "\r\n".join(
+                [
+                    "v=0",
+                    "m=application 53389 UDP/DTLS/SCTP webrtc-datachannel",
+                    "c=IN IP4 10.0.0.2",
+                    "a=candidate:1 1 udp 2130706431 10.0.0.2 53389 typ host",
+                    "a=candidate:2 1 udp 2130706431 172.25.16.1 53390 typ host",
+                    "a=candidate:3 1 udp 2130706431 192.168.0.119 53394 typ host",
+                    "a=end-of-candidates",
+                ]
+            )
+            + "\r\n"
+        )
+
+        join = await self.client.post(
+            "/api/room/join",
+            json={"room_id": "living-room", "player_id": "alice"},
+        )
+        joined = await join.json()
+
+        response = await self.client.post(
+            "/api/control/offer",
+            headers={"Host": "192.168.0.119:8082"},
+            json={
+                "room_id": "living-room",
+                "player_id": joined["player_id"],
+                "reconnect_token": joined["reconnect_token"],
+                "sdp": "fake-offer",
+                "type": "offer",
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("a=candidate:3 1 udp 2130706431 192.168.0.119 53394 typ host", payload["sdp"])
+        self.assertNotIn("10.0.0.2 53389 typ host", payload["sdp"])
+        self.assertNotIn("172.25.16.1 53390 typ host", payload["sdp"])
 
     async def test_control_offer_rejects_spectators(self) -> None:
         for idx in range(4):

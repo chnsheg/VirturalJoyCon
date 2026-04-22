@@ -2,6 +2,7 @@ param(
     [int]$HttpPort = 8081,
     [int]$FrontendPort = 0,
     [int]$UdpPort = 28777,
+    [string]$WebRtcControlProgram = "",
     [switch]$SkipUdp,
     [switch]$EnableWebRtcMedia
 )
@@ -23,6 +24,18 @@ function Ensure-FirewallRule {
 
     Remove-FirewallRule -Name $Name
     netsh advfirewall firewall add rule name="$Name" dir=in action=allow protocol=$Protocol localport=$Port profile=any | Out-Null
+    Write-Host "Rule ensured: $Name" -ForegroundColor Green
+}
+
+function Ensure-ProgramFirewallRule {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Program,
+        [Parameter(Mandatory = $true)][string]$Protocol
+    )
+
+    Remove-FirewallRule -Name $Name
+    netsh advfirewall firewall add rule name="$Name" dir=in action=allow program="$Program" protocol=$Protocol profile=private remoteip=localsubnet | Out-Null
     Write-Host "Rule ensured: $Name" -ForegroundColor Green
 }
 
@@ -51,6 +64,12 @@ if ($EnableWebRtcMedia) {
     Remove-FirewallRule -Name "JoyCon-WebRTC-UDP-8189"
 }
 
+if ($WebRtcControlProgram) {
+    Ensure-ProgramFirewallRule -Name "JoyCon-WebRTC-Control-UDP" -Program $WebRtcControlProgram -Protocol "UDP"
+} else {
+    Remove-FirewallRule -Name "JoyCon-WebRTC-Control-UDP"
+}
+
 if (-not $SkipUdp) {
     $rules += @{ Name = "JoyCon-UDP-$UdpPort"; Protocol = 'UDP'; Port = $UdpPort }
 } else {
@@ -75,9 +94,9 @@ Get-NetTCPConnection -LocalPort $HttpPort -State Listen |
 Write-Host ''
 if ($EnableWebRtcMedia) {
     if ($FrontendPort -gt 0) {
-        Write-Host "Done. Frontend: <LAN_IP>:$FrontendPort | Host target: <LAN_IP>:$HttpPort (Streaming gateway target, WebRTC 8189/UDP open, 8889/TCP stays local)" -ForegroundColor Green
+        Write-Host "Done. Frontend: <LAN_IP>:$FrontendPort | Host target: <LAN_IP>:$HttpPort (Streaming gateway target, WebRTC 8189/UDP open, Python UDP app rule keeps WebRTC DataChannel reachable, 8889/TCP stays local)" -ForegroundColor Green
     } else {
-        Write-Host "Done. Host target: <LAN_IP>:$HttpPort (Streaming gateway target, WebRTC 8189/UDP open, 8889/TCP stays local)" -ForegroundColor Green
+        Write-Host "Done. Host target: <LAN_IP>:$HttpPort (Streaming gateway target, WebRTC 8189/UDP open, Python UDP app rule keeps WebRTC DataChannel reachable, 8889/TCP stays local)" -ForegroundColor Green
     }
 } elseif ($SkipUdp) {
     Write-Host "Done. Host target: <LAN_IP>:$HttpPort (TCP only; no UDP or WebRTC firewall rules left open)" -ForegroundColor Green
