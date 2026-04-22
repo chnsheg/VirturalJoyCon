@@ -138,6 +138,39 @@ function Out-Null {{
             result.stdout,
         )
 
+    def test_fix_network_access_tolerates_http_port_not_listening_yet(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "fix_network_access.ps1"
+        command = f"""
+function Set-NetConnectionProfile {{ }}
+function Get-NetIPAddress {{ @() }}
+function Get-NetTCPConnection {{
+    [CmdletBinding()]
+    param(
+        [int]$LocalPort,
+        [string]$State
+    )
+    Write-Error "No listening socket is present on port $LocalPort yet."
+}}
+function netsh {{
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    "NETSH:$($Args -join ' ')"
+}}
+function Out-Null {{
+    process {{ $_ }}
+}}
+& '{script_path}' -HttpPort 8082 -SkipUdp
+"""
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+        self.assertIn("Port 8082 is not listening yet", result.stdout)
+        self.assertIn("Done. Host target: <LAN_IP>:8082", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

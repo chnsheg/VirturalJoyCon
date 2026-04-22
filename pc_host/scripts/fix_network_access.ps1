@@ -42,9 +42,14 @@ Get-NetIPAddress -AddressFamily IPv4 |
     Format-Table -AutoSize
 
 Write-Host '[4/4] Verify port listen status...' -ForegroundColor Cyan
-Get-NetTCPConnection -LocalPort $HttpPort -State Listen |
-    Select-Object -First 3 LocalAddress,LocalPort,State,OwningProcess |
-    Format-Table -AutoSize
+$listeners = @(Get-NetTCPConnection -LocalPort $HttpPort -State Listen -ErrorAction SilentlyContinue)
+if ($listeners.Count -gt 0) {
+    $listeners |
+        Select-Object -First 3 LocalAddress,LocalPort,State,OwningProcess |
+        Format-Table -AutoSize
+} else {
+    Write-Host "Port $HttpPort is not listening yet; this is expected before the service starts." -ForegroundColor Yellow
+}
 
 Write-Host ''
 if ($SkipUdp) {
