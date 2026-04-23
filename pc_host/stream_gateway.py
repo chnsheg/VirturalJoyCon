@@ -35,6 +35,7 @@ DEFAULT_STREAM_SETTINGS = {
     "bitrateKbps": 6000,
 }
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PUBLISHER_IDENTITY_UNSET = object()
 
 
 if os.name == "nt":
@@ -204,6 +205,12 @@ def parse_active_stream_settings(payload: Mapping[str, object] | None) -> dict[s
 
     if normalize_stream_settings(raw_settings) != raw_settings:
         return None
+    if clamp_effective_profile(
+        _stream_profile_from_settings(raw_settings),
+        source_caps=DEFAULT_SOURCE_CAPS,
+        runtime_caps=DEFAULT_RUNTIME_CAPS,
+    ) != _stream_profile_from_settings(raw_settings):
+        return None
 
     request_fingerprint = str(payload.get("requestFingerprint") or "").strip().upper()
     publisher_pid = _read_required_strict_integer(payload, "publisherPid")
@@ -236,7 +243,7 @@ def _filetime_to_int(filetime: object) -> int:
     return (int(filetime.dwHighDateTime) << 32) | int(filetime.dwLowDateTime)
 
 
-def get_process_identity(pid: int) -> tuple[int, int] | None:
+def _get_process_filetimes(pid: int) -> tuple[int, int] | None:
     if pid <= 0 or os.name != "nt":
         return None
 
@@ -258,9 +265,37 @@ def get_process_identity(pid: int) -> tuple[int, int] | None:
             ctypes.byref(user_time),
         ):
             return None
-        return pid, _filetime_to_int(creation_time)
+        return _filetime_to_int(creation_time), _filetime_to_int(exit_time)
     finally:
         _close_handle(process_handle)
+
+
+def get_process_identity(pid: int) -> tuple[int, int] | None:
+    filetimes = _get_process_filetimes(pid)
+    if filetimes is None:
+        return None
+
+    creation_time, exit_time = filetimes
+    if exit_time != 0:
+        return None
+    return pid, creation_time
+
+
+def active_publisher_identity(
+    active_settings: Mapping[str, object] | None,
+) -> tuple[int, int] | None:
+    if active_settings is None:
+        return None
+
+    publisher_pid = active_settings.get("publisherPid")
+    publisher_started_at = active_settings.get("publisherStartedAtFileTimeUtc")
+    if not isinstance(publisher_pid, int) or not isinstance(publisher_started_at, int):
+        return None
+
+    identity = get_process_identity(publisher_pid)
+    if identity != (publisher_pid, publisher_started_at):
+        return None
+    return identity
 
 
 def is_process_alive(pid: int) -> bool:
@@ -308,18 +343,18 @@ def load_requested_stream_settings_snapshot(settings_path: Path) -> tuple[dict[s
 def stream_settings_applied(
     settings_fingerprint: str,
     active_settings: Mapping[str, object] | None,
+    *,
+    publisher_identity: tuple[int, int] | None | object = PUBLISHER_IDENTITY_UNSET,
 ) -> bool:
     if active_settings is None or not settings_fingerprint:
         return False
     active_fingerprint = str(active_settings.get("requestFingerprint") or "").strip().upper()
-    publisher_pid = active_settings.get("publisherPid")
-    publisher_started_at = active_settings.get("publisherStartedAtFileTimeUtc")
-    return (
-        active_fingerprint == settings_fingerprint
-        and isinstance(publisher_pid, int)
-        and isinstance(publisher_started_at, int)
-        and get_process_identity(publisher_pid) == (publisher_pid, publisher_started_at)
+    active_identity = (
+        active_publisher_identity(active_settings)
+        if publisher_identity is PUBLISHER_IDENTITY_UNSET
+        else publisher_identity
     )
+    return active_fingerprint == settings_fingerprint and active_identity is not None
 
 
 def get_stream_settings_fingerprint(settings_path: Path) -> str:
@@ -347,13 +382,15 @@ def _stream_settings_payload(
     active_settings: Mapping[str, object] | None,
 ) -> dict[str, object]:
     requested = _stream_profile_from_settings(settings)
+    active_identity = active_publisher_identity(active_settings)
+    trusted_active_settings = active_settings if active_identity is not None else None
     effective = (
         clamp_effective_profile(
-            _stream_profile_from_settings(active_settings),
+            _stream_profile_from_settings(trusted_active_settings),
             source_caps=DEFAULT_SOURCE_CAPS,
             runtime_caps=DEFAULT_RUNTIME_CAPS,
         )
-        if active_settings is not None
+        if trusted_active_settings is not None
         else clamp_effective_profile(
             requested,
             source_caps=DEFAULT_SOURCE_CAPS,
@@ -364,7 +401,11 @@ def _stream_settings_payload(
         requested=requested,
         effective=effective,
         source_caps=DEFAULT_SOURCE_CAPS,
-        applied=stream_settings_applied(settings_fingerprint, active_settings),
+        applied=stream_settings_applied(
+            settings_fingerprint,
+            active_settings,
+            publisher_identity=active_identity,
+        ),
     )
 
 
