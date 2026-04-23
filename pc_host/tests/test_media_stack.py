@@ -286,6 +286,7 @@ class MediaStackTests(unittest.TestCase):
         publisher_script = PROJECT_ROOT / "scripts" / "start_stream_publisher.ps1"
         firewall_script = PROJECT_ROOT / "scripts" / "fix_network_access.ps1"
         launcher_script = PROJECT_ROOT / "scripts" / "start_lan_streaming_web_controller.ps1"
+        stop_script = PROJECT_ROOT / "scripts" / "stop_lan_streaming_web_controller.ps1"
         runtime_helper_script = PROJECT_ROOT / "scripts" / "runtime_path_helpers.ps1"
         readme_path = PROJECT_ROOT / "README.md"
 
@@ -293,6 +294,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertTrue(publisher_script.exists(), f"Missing script: {publisher_script}")
         self.assertTrue(firewall_script.exists(), f"Missing script: {firewall_script}")
         self.assertTrue(launcher_script.exists(), f"Missing script: {launcher_script}")
+        self.assertTrue(stop_script.exists(), f"Missing script: {stop_script}")
         self.assertTrue(runtime_helper_script.exists(), f"Missing script: {runtime_helper_script}")
         self.assertTrue(readme_path.exists(), f"Missing README: {readme_path}")
 
@@ -380,13 +382,25 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("http.server", launcher_text)
         self.assertIn("start_media_stack.ps1", launcher_text)
         self.assertIn("start_stream_publisher.ps1", launcher_text)
+        self.assertIn("stop_lan_streaming_web_controller.ps1", launcher_text)
         self.assertIn("Get-NetTCPConnection -State Listen -LocalPort", launcher_text)
         self.assertIn("Get-NetUDPEndpoint -LocalPort", launcher_text)
         self.assertIn("OwningProcess", launcher_text)
         self.assertIn("ParentProcessId", launcher_text)
+        self.assertIn("RedirectStandardOutput", launcher_text)
+        self.assertIn("RedirectStandardError", launcher_text)
+        self.assertNotIn("Start-WindowedCommand", launcher_text)
+        self.assertNotIn("Start-WindowedScript", launcher_text)
+        self.assertNotIn("-NoExit", launcher_text)
         self.assertNotIn("WebRtcControlProgram", launcher_text)
         self.assertNotIn("49152-65535", launcher_text)
         self.assertIn("Media WHEP: http://$($address.IPAddress):8889/game/whep", launcher_text)
+
+        stop_text = stop_script.read_text(encoding="utf-8")
+        self.assertIn("Stop-Process -Id", stop_text)
+        self.assertIn("Get-ExistingManagedStackProcesses", stop_text)
+        self.assertIn("Wait-RequiredPortsToFree", stop_text)
+        self.assertNotIn("-NoExit", stop_text)
 
         readme_text = readme_path.read_text(encoding="utf-8")
         self.assertIn("# 局域网串流 Web Controller", readme_text)
@@ -403,6 +417,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("virtual-audio-capturer", readme_text)
         self.assertIn("DirectShow", readme_text)
         self.assertIn("pwsh .\\scripts\\start_lan_streaming_web_controller.ps1", readme_text)
+        self.assertIn("pwsh .\\scripts\\stop_lan_streaming_web_controller.ps1", readme_text)
         self.assertIn("192.168.0.119", readme_text)
         self.assertIn("http://192.168.0.119:8090", readme_text)
         self.assertIn("192.168.0.119:8082", readme_text)
@@ -424,6 +439,8 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("管理员", readme_text)
         self.assertIn("2026-04-22 16:46", readme_text)
         self.assertIn("重复执行一键启动脚本时", readme_text)
+        self.assertIn("只会占用当前这个 PowerShell 窗口", readme_text)
+        self.assertIn("后台进程日志", readme_text)
         self.assertNotIn("## Streaming stack quick start", readme_text)
 
     def test_publisher_runtime_profile_is_not_locked_by_launch_time_dimensions(self) -> None:

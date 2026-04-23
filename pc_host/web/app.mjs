@@ -20,7 +20,7 @@ import {
 } from "./host-config.mjs?v=stream-20260422-9";
 import { computeLayoutMetrics } from "./layout-core.mjs";
 import { getControlHudText, negotiateControlPeer } from "./stream-control.mjs";
-import { createStreamCanvasRenderer, subscribeViaWhep } from "./stream-media.mjs?v=stream-20260422-3";
+import { createStreamCanvasRenderer, subscribeViaWhep } from "./stream-media.mjs?v=stream-20260423-3";
 import { createInitialStreamState, createRoomSessionClient, roomStatusText } from "./stream-session.mjs";
 
 const connEl = document.getElementById("conn");
@@ -60,7 +60,6 @@ const fullscreenPlaybackEl = document.getElementById("fullscreenPlayback");
 const STREAM_RECONNECT_TOKEN_KEY = "joycon_stream_reconnect_token";
 const STREAM_APPLY_POLL_INTERVAL_MS = 180;
 const STREAM_APPLY_POLL_ATTEMPTS = 20;
-const STREAM_AUTOSAVE_DELAY_MS = 520;
 const STREAM_TELEMETRY_POLL_MS = 1000;
 const STREAM_TELEMETRY_SMOOTHING_ALPHA = 0.34;
 const STREAM_RESYNC_COOLDOWN_MS = 1200;
@@ -163,7 +162,8 @@ let activeControlPeer = null;
 let activeControlChannel = null;
 let activeInputChannel = null;
 let controlHudMode = "idle";
-let streamSettingsAutoSaveTimer = null;
+let streamSettingsDirty = false;
+let streamSettingsSavePromise = null;
 let hostDrawerWasOpen = false;
 let streamTelemetryInFlight = false;
 let lastStreamTelemetryPollAt = -Infinity;
@@ -880,6 +880,7 @@ async function loadStreamSettings(hostTarget) {
 
   if (!hostTarget) {
     applyStreamSettingsForm(DEFAULT_STREAM_SETTINGS);
+    streamSettingsDirty = false;
     streamSettingsStatusEl.textContent = "";
     return DEFAULT_STREAM_SETTINGS;
   }
@@ -895,17 +896,27 @@ async function loadStreamSettings(hostTarget) {
     const payload = await response.json();
     const settings = normalizeStreamSettings(payload);
     applyStreamSettingsForm(settings);
+    streamSettingsDirty = false;
     streamSettingsStatusEl.textContent = payload.applied ? "stream applied" : "stream profile ready";
     return settings;
   } catch {
     applyStreamSettingsForm(DEFAULT_STREAM_SETTINGS);
+    streamSettingsDirty = false;
     streamSettingsStatusEl.textContent = "stream profile unavailable";
     return DEFAULT_STREAM_SETTINGS;
   }
 }
 
-async function saveStreamSettings(hostTarget) {
+async function saveStreamSettings(hostTarget, { force = false } = {}) {
   if (!streamSettingsStatusEl) {
+    return;
+  }
+
+  if (streamSettingsSavePromise) {
+    return streamSettingsSavePromise;
+  }
+
+  if (!force && !streamSettingsDirty) {
     return;
   }
 
@@ -918,35 +929,44 @@ async function saveStreamSettings(hostTarget) {
   applyStreamSettingsForm(settings);
   streamSettingsStatusEl.textContent = "saving stream profile";
 
-  try {
-    const response = await fetch(buildStreamSettingsUrl(hostTarget), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(settings),
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok || payload?.ok === false) {
-      throw new Error(payload?.reason || `http_${response.status}`);
-    }
-    applyStreamSettingsForm(payload);
-    if (payload.applied) {
-      streamSettingsStatusEl.textContent = "stream applied";
-      return;
-    }
+  streamSettingsSavePromise = (async () => {
+    try {
+      const response = await fetch(buildStreamSettingsUrl(hostTarget), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.reason || `http_${response.status}`);
+      }
+      applyStreamSettingsForm(payload);
+      streamSettingsDirty = false;
+      if (payload.applied) {
+        streamSettingsStatusEl.textContent = "stream applied";
+        return;
+      }
 
-    streamSettingsStatusEl.textContent = "applying stream profile";
-    const appliedPayload = await pollAppliedStreamSettings(hostTarget);
-    if (appliedPayload) {
-      applyStreamSettingsForm(appliedPayload);
-      streamSettingsStatusEl.textContent = "stream applied";
-      return;
-    }
+      streamSettingsStatusEl.textContent = "applying stream profile";
+      const appliedPayload = await pollAppliedStreamSettings(hostTarget);
+      if (appliedPayload) {
+        applyStreamSettingsForm(appliedPayload);
+        streamSettingsDirty = false;
+        streamSettingsStatusEl.textContent = "stream applied";
+        return;
+      }
 
-    streamSettingsStatusEl.textContent = "saved; publisher still reloading";
-  } catch {
-    streamSettingsStatusEl.textContent = "save failed";
-  }
+      streamSettingsStatusEl.textContent = "saved; publisher still reloading";
+    } catch {
+      streamSettingsDirty = true;
+      streamSettingsStatusEl.textContent = "save failed";
+    } finally {
+      streamSettingsSavePromise = null;
+    }
+  })();
+
+  return streamSettingsSavePromise;
 }
 
 function resolveStreamSettingsHostTarget() {
@@ -982,6 +1002,7 @@ function renderHostDrawer(statusMessage = "") {
 async function requestImmersiveViewport({ silent = true } = {}) {
   const documentEl = globalThis.document;
   const rootEl = documentEl?.documentElement;
+
   if (!rootEl || typeof rootEl.requestFullscreen !== "function") {
     if (!silent) {
       hostTargetStatusEl.textContent = "fullscreen unavailable";
@@ -1054,14 +1075,7 @@ async function resyncActiveStreaming(reason = "resume") {
   }
 }
 
-function clearStreamSettingsAutoSaveTimer() {
-  if (streamSettingsAutoSaveTimer !== null) {
-    window.clearTimeout(streamSettingsAutoSaveTimer);
-    streamSettingsAutoSaveTimer = null;
-  }
-}
-
-function scheduleStreamSettingsAutoSave() {
+function markStreamSettingsPending() {
   if (!streamSettingsStatusEl) {
     return;
   }
@@ -1069,16 +1083,11 @@ function scheduleStreamSettingsAutoSave() {
   const hostTarget = resolveStreamSettingsHostTarget();
   if (!hostTarget) {
     streamSettingsStatusEl.textContent = "Set the host first";
-    clearStreamSettingsAutoSaveTimer();
     return;
   }
 
-  streamSettingsStatusEl.textContent = "stream profile queued";
-  clearStreamSettingsAutoSaveTimer();
-  streamSettingsAutoSaveTimer = window.setTimeout(() => {
-    streamSettingsAutoSaveTimer = null;
-    void saveStreamSettings(resolveStreamSettingsHostTarget());
-  }, STREAM_AUTOSAVE_DELAY_MS);
+  streamSettingsDirty = true;
+  streamSettingsStatusEl.textContent = "stream profile edited";
 }
 
 function getWsUrl() {
@@ -1793,13 +1802,16 @@ hostTargetFormEl.addEventListener("submit", (event) => {
   videoBitrateInputEl,
 ].forEach((element) => {
   element?.addEventListener("input", () => {
-    scheduleStreamSettingsAutoSave();
+    markStreamSettingsPending();
+  });
+
+  element?.addEventListener("blur", () => {
+    void saveStreamSettings(resolveStreamSettingsHostTarget());
   });
 });
 
 streamSettingsSaveEl?.addEventListener("click", () => {
-  clearStreamSettingsAutoSaveTimer();
-  void saveStreamSettings(resolveStreamSettingsHostTarget());
+  void saveStreamSettings(resolveStreamSettingsHostTarget(), { force: true });
 });
 
 fullscreenPlaybackEl?.addEventListener("click", (event) => {
@@ -1811,6 +1823,7 @@ applyResponsiveLayout();
 updateHostText();
 renderHostDrawer();
 applyStreamSettingsForm(DEFAULT_STREAM_SETTINGS);
+streamSettingsDirty = false;
 renderRoomState();
 if (latencyEl) {
   latencyEl.hidden = true;

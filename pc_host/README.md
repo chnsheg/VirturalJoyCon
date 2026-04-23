@@ -40,14 +40,22 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1
 
 这个脚本会检查运行环境、安装 Python 依赖、检查防火墙、启动控制网关、启动 MediaMTX、启动 FFmpeg 推流器，并启动静态网页服务器。
 
-启动成功后，你会看到 4 个长期运行的服务窗口：
+启动成功后，只会占用当前这个 PowerShell 窗口，不会再额外弹出 4 个常驻 PowerShell 窗口。长期运行的服务仍然是这 4 个：
 
 - `stream_gateway.py`，监听 `8082/TCP`
 - `MediaMTX`，提供 `8889/TCP` 的 WHEP / WebRTC 媒体入口
 - `FFmpeg` 推流器，把桌面画面推到本机 `rtsp://127.0.0.1:8554/game`
 - `python -m http.server`，监听 `8090/TCP` 托管手机访问页面
 
+后台进程日志会写到 `.runtime\logs\`，例如 `stream-gateway.stdout.log`、`stream-publisher.stderr.log`。
+
 重复执行一键启动脚本时，它会先停止自己这套栈上一次留下的旧进程，再重新启动；如果你不想自动重启旧进程，可以加 `-NoRestartExisting`。
+
+一键关闭整套串流：
+
+```powershell
+pwsh .\scripts\stop_lan_streaming_web_controller.ps1
+```
 
 如果只想预览启动流程，不真正启动服务：
 

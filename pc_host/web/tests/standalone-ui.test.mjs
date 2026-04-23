@@ -1302,33 +1302,40 @@ test("apply stream polls until the publisher reports the profile is active", asy
   assert.equal(harness.streamSettingsStatusEl.textContent, "stream applied");
 });
 
-test("stream settings input changes auto-apply after a short pause", async (t) => {
+test("stream settings input waits for blur before auto-applying", async (t) => {
   const harness = installAppHarness({
     savedHostTarget: "10.0.0.3:8082",
   });
   t.after(() => harness.restore());
 
-  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-autosave`);
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-apply-on-blur`);
   await harness.settle();
 
+  harness.videoHeightInputEl.value = "1080";
+  harness.videoHeightInputEl.dispatch("input");
   harness.videoFpsInputEl.value = "90";
   harness.videoFpsInputEl.dispatch("input");
   harness.videoBitrateInputEl.value = "12000";
   harness.videoBitrateInputEl.dispatch("input");
 
-  const autoSaveTimer = [...harness.timers.values()].find((timer) => !timer.cleared);
-  assert.ok(autoSaveTimer, "expected a pending autosave timer");
+  assert.equal(
+    harness.fetchCalls.some(
+      ([url, init]) => String(url) === "http://10.0.0.3:8082/api/stream/settings" && init?.method === "POST",
+    ),
+    false,
+    "expected no stream settings POST while the field is still focused",
+  );
 
-  autoSaveTimer.callback();
+  harness.videoBitrateInputEl.dispatch("blur");
   await harness.settle();
 
   const streamSaveCall = harness.fetchCalls.find(
     ([url, init]) => String(url) === "http://10.0.0.3:8082/api/stream/settings" && init?.method === "POST",
   );
-  assert.ok(streamSaveCall, "expected a stream settings POST after the autosave delay");
+  assert.ok(streamSaveCall, "expected a stream settings POST after blur");
   assert.deepEqual(JSON.parse(streamSaveCall[1].body), {
     width: 1280,
-    height: 720,
+    height: 1080,
     fps: 90,
     bitrateKbps: 12000,
   });

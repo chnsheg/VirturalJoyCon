@@ -33,7 +33,11 @@ $script:RequirementsPath = Join-Path $script:PcHostDir "requirements.txt"
 $script:FixNetworkAccessScript = Join-Path $PSScriptRoot "fix_network_access.ps1"
 $script:MediaStackScript = Join-Path $PSScriptRoot "start_media_stack.ps1"
 $script:PublisherScript = Join-Path $PSScriptRoot "start_stream_publisher.ps1"
+$script:StopStackScript = Join-Path $PSScriptRoot "stop_lan_streaming_web_controller.ps1"
 $script:MediaMtxConfigPath = Join-Path $script:PcHostDir "config\mediamtx.yml"
+$script:RuntimeDir = Join-Path $script:PcHostDir ".runtime"
+$script:ManagedLogDir = Join-Path $script:RuntimeDir "logs"
+$script:ManagedStatePath = Join-Path $script:RuntimeDir "managed_stack.json"
 $script:ShellExecutable = (Get-Process -Id $PID).Path
 $script:RequiredImports = @("aiohttp", "aiortc", "vgamepad")
 
@@ -628,51 +632,97 @@ function Format-CommandLine {
     return $tokens -join " "
 }
 
-function New-PowerShellCommand {
+function Ensure-ManagedRuntimeDirectories {
+    foreach ($path in @($script:RuntimeDir, $script:ManagedLogDir)) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+        }
+    }
+}
+
+function Clear-ManagedStackState {
+    if (Test-Path -LiteralPath $script:ManagedStatePath) {
+        Remove-Item -LiteralPath $script:ManagedStatePath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-ManagedLogPaths {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $safeName = (($Name -replace '[^A-Za-z0-9]+', '-') -replace '^-+|-+$', '').ToLowerInvariant()
+    if (-not $safeName) {
+        $safeName = "managed-process"
+    }
+
+    return [pscustomobject]@{
+        StdOutPath = Join-Path $script:ManagedLogDir "${safeName}.stdout.log"
+        StdErrPath = Join-Path $script:ManagedLogDir "${safeName}.stderr.log"
+    }
+}
+
+function Write-ManagedStackState {
+    param([Parameter(Mandatory = $true)][object[]]$Entries)
+
+    Ensure-ManagedRuntimeDirectories
+    $payload = [ordered]@{
+        createdAt = (Get-Date).ToString("o")
+        processes = @(
+            $Entries |
+                Where-Object { $null -ne $_.Process } |
+                ForEach-Object {
+                    [ordered]@{
+                        name = $_.Name
+                        pid = [int]$_.Process.Id
+                        stdout = $_.StdOutPath
+                        stderr = $_.StdErrPath
+                    }
+                }
+        )
+    }
+
+    $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $script:ManagedStatePath -Encoding UTF8
+}
+
+function Start-BackgroundProcess {
     param(
-        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $quotedArgs = @($Arguments | ForEach-Object { Quote-Argument -Value "$_" })
-    return "& $(Quote-Argument -Value $ExecutablePath) $($quotedArgs -join ' ')"
-}
-
-function Start-WindowedCommand {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [Parameter(Mandatory = $true)][string]$CommandText
-    )
-
-    $argumentList = @("-NoLogo", "-NoExit", "-Command", $CommandText)
-    Write-Host "Launching ${Name}:" -ForegroundColor Cyan
-    Write-Host "  $(Format-CommandLine -FilePath $script:ShellExecutable -Arguments $argumentList)" -ForegroundColor DarkGray
+    Ensure-ManagedRuntimeDirectories
+    $logPaths = Get-ManagedLogPaths -Name $Name
+    Write-Host "Launching ${Name} in background:" -ForegroundColor Cyan
+    Write-Host "  $(Format-CommandLine -FilePath $FilePath -Arguments $Arguments)" -ForegroundColor DarkGray
+    Write-Host "  stdout -> $($logPaths.StdOutPath)" -ForegroundColor DarkGray
+    Write-Host "  stderr -> $($logPaths.StdErrPath)" -ForegroundColor DarkGray
 
     if ($DryRun) {
-        return $null
+        return [pscustomobject]@{
+            Name = $Name
+            Process = $null
+            StdOutPath = $logPaths.StdOutPath
+            StdErrPath = $logPaths.StdErrPath
+        }
     }
 
-    return Start-Process -FilePath $script:ShellExecutable -ArgumentList $argumentList -WorkingDirectory $WorkingDirectory -PassThru
-}
+    Remove-Item -LiteralPath $logPaths.StdOutPath, $logPaths.StdErrPath -Force -ErrorAction SilentlyContinue
+    $process = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $Arguments `
+        -WorkingDirectory $WorkingDirectory `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $logPaths.StdOutPath `
+        -RedirectStandardError $logPaths.StdErrPath `
+        -PassThru
 
-function Start-WindowedScript {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [Parameter(Mandatory = $true)][string]$ScriptPath,
-        [string[]]$Arguments = @()
-    )
-
-    $argumentList = @("-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath) + $Arguments
-    Write-Host "Launching ${Name}:" -ForegroundColor Cyan
-    Write-Host "  $(Format-CommandLine -FilePath $script:ShellExecutable -Arguments $argumentList)" -ForegroundColor DarkGray
-
-    if ($DryRun) {
-        return $null
+    return [pscustomobject]@{
+        Name = $Name
+        Process = $process
+        StdOutPath = $logPaths.StdOutPath
+        StdErrPath = $logPaths.StdErrPath
     }
-
-    return Start-Process -FilePath $script:ShellExecutable -ArgumentList $argumentList -WorkingDirectory $WorkingDirectory -PassThru
 }
 
 Write-Step "[1/8] Checking runtime prerequisites..."
@@ -798,6 +848,7 @@ $requiredPorts = @(
 if (-not $NoRestartExisting) {
     Write-Step "[5/8] Releasing existing managed stack processes..."
     Stop-ExistingManagedStackProcesses -GatewayPort $GatewayPort -FrontendPort $FrontendPort -RequiredPorts $requiredPorts
+    Clear-ManagedStackState
 } else {
     Write-Step "[5/8] Skipping existing process cleanup by request..."
 }
@@ -821,7 +872,7 @@ $pythonPrefixArgs = if ($python) { @($python.PrefixArgs) } else { @() }
 $mediaMtxExeForLaunch = if ($mediaMtx.Found) { $mediaMtx.Path } else { $MediaMtxExe }
 $ffmpegExeForLaunch = if ($ffmpeg.Found) { $ffmpeg.Path } else { $FfmpegExe }
 
-$gatewayCommand = New-PowerShellCommand -ExecutablePath $pythonExeForLaunch -Arguments @(
+$gatewayArguments = @(
     $pythonPrefixArgs +
     @(
         "stream_gateway.py",
@@ -833,7 +884,7 @@ $gatewayCommand = New-PowerShellCommand -ExecutablePath $pythonExeForLaunch -Arg
     )
 )
 
-$frontendCommand = New-PowerShellCommand -ExecutablePath $pythonExeForLaunch -Arguments @(
+$frontendArguments = @(
     $pythonPrefixArgs +
     @(
         "-m", "http.server",
@@ -856,15 +907,18 @@ if ($AudioDevice) {
     $publisherArguments += @("-AudioDevice", $AudioDevice)
 }
 
-$gatewayProcess = Start-WindowedCommand -Name "stream gateway" -WorkingDirectory $script:PcHostDir -CommandText $gatewayCommand
-$mediaStackProcess = Start-WindowedScript -Name "MediaMTX" -WorkingDirectory $script:PcHostDir -ScriptPath $script:MediaStackScript -Arguments $mediaStackArguments
-$publisherProcess = Start-WindowedScript -Name "stream publisher" -WorkingDirectory $script:PcHostDir -ScriptPath $script:PublisherScript -Arguments $publisherArguments
-$frontendProcess = Start-WindowedCommand -Name "frontend static server" -WorkingDirectory (Join-Path $script:PcHostDir "web") -CommandText $frontendCommand
+$gatewayProcess = Start-BackgroundProcess -Name "stream gateway" -WorkingDirectory $script:PcHostDir -FilePath $pythonExeForLaunch -Arguments $gatewayArguments
+$mediaStackProcess = Start-BackgroundProcess -Name "MediaMTX" -WorkingDirectory $script:PcHostDir -FilePath $script:ShellExecutable -Arguments (@("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script:MediaStackScript) + $mediaStackArguments)
+$publisherProcess = Start-BackgroundProcess -Name "stream publisher" -WorkingDirectory $script:PcHostDir -FilePath $script:ShellExecutable -Arguments (@("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script:PublisherScript) + $publisherArguments)
+$frontendProcess = Start-BackgroundProcess -Name "frontend static server" -WorkingDirectory (Join-Path $script:PcHostDir "web") -FilePath $pythonExeForLaunch -Arguments $frontendArguments
 
 if ($DryRun) {
+    Clear-ManagedStackState
     Write-Step "[8/8] DryRun summary..."
     Write-Ok "DryRun complete. No firewall rules were changed and no services were started."
 } else {
+    $processSummary = @($gatewayProcess, $mediaStackProcess, $publisherProcess, $frontendProcess)
+    Write-ManagedStackState -Entries $processSummary
     Write-Step "[8/8] Waiting for services to listen..."
     Start-Sleep -Seconds 4
 
@@ -889,17 +943,14 @@ if ($DryRun) {
         Write-Note "Some services are not listening yet: $($missingListeners -join ', ')"
     }
 
-    $processSummary = @(
-        @{ Name = "stream gateway"; Process = $gatewayProcess },
-        @{ Name = "MediaMTX"; Process = $mediaStackProcess },
-        @{ Name = "stream publisher"; Process = $publisherProcess },
-        @{ Name = "frontend static server"; Process = $frontendProcess }
-    )
     foreach ($entry in $processSummary) {
         if ($null -ne $entry.Process) {
-            Write-Host "$($entry.Name) window pid: $($entry.Process.Id)" -ForegroundColor DarkGray
+            Write-Host "$($entry.Name) pid: $($entry.Process.Id)" -ForegroundColor DarkGray
+            Write-Host "  stdout: $($entry.StdOutPath)" -ForegroundColor DarkGray
+            Write-Host "  stderr: $($entry.StdErrPath)" -ForegroundColor DarkGray
         }
     }
+    Write-Host "Stop script: $script:StopStackScript" -ForegroundColor DarkGray
 }
 
 $lanAddresses = Get-PrivateLanAddresses
