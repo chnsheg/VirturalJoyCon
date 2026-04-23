@@ -68,6 +68,8 @@ class RuntimeNotesTests(unittest.TestCase):
         self.assertIn("Public control path prefers WebRTC DataChannel", note_text)
         self.assertIn("Requested FPS may be clamped to the source refresh rate", note_text)
         self.assertIn("effective stream profile", note_text)
+        self.assertIn("stream_gateway.py /api/stream/settings", note_text)
+        self.assertNotIn("visible via /api/stream/settings", note_text)
 
     def test_fix_network_access_skip_udp_removes_stale_udp_rule(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "fix_network_access.ps1"
