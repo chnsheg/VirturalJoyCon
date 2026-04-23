@@ -132,16 +132,34 @@ function Get-DshowDeviceSelector {
     return $Device.DisplayName
 }
 
-function Get-SavedStreamSettings {
+function Get-SavedStreamSettingsSnapshot {
     if (-not (Test-Path -LiteralPath $script:StreamSettingsPath)) {
-        return $null
+        return [pscustomobject]@{
+            Settings    = $null
+            Fingerprint = ""
+        }
     }
 
     try {
-        return Get-Content -LiteralPath $script:StreamSettingsPath -Raw | ConvertFrom-Json
+        $settingsBytes = [System.IO.File]::ReadAllBytes($script:StreamSettingsPath)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $settingsFingerprint = -join ($sha256.ComputeHash($settingsBytes) | ForEach-Object { $_.ToString("X2") })
+        } finally {
+            $sha256.Dispose()
+        }
+        $settingsJson = [System.Text.Encoding]::UTF8.GetString($settingsBytes)
+        $settings = if ($settingsJson.Trim()) { $settingsJson | ConvertFrom-Json } else { $null }
+        return [pscustomobject]@{
+            Settings    = $settings
+            Fingerprint = $settingsFingerprint
+        }
     } catch {
         Write-Warning "Ignoring unreadable stream settings file at $script:StreamSettingsPath"
-        return $null
+        return [pscustomobject]@{
+            Settings    = $null
+            Fingerprint = ""
+        }
     }
 }
 
@@ -185,7 +203,11 @@ function Get-StreamSettingsFingerprint {
 }
 
 function Get-EffectiveStreamProfile {
-    $savedStreamSettings = Get-SavedStreamSettings
+    param(
+        $SettingsSnapshot
+    )
+
+    $savedStreamSettings = $SettingsSnapshot.Settings
     $effectiveWidth = $Width
     $effectiveHeight = $Height
     $effectiveFps = $Fps
@@ -357,7 +379,8 @@ function New-FfmpegArgumentList {
 function Write-ActiveStreamSettings {
     param(
         [System.Collections.IDictionary]$Profile,
-        [string]$RequestFingerprint
+        [string]$RequestFingerprint,
+        [int]$PublisherPid
     )
 
     New-Item -ItemType Directory -Path $script:RuntimeDir -Force | Out-Null
@@ -367,6 +390,7 @@ function Write-ActiveStreamSettings {
         fps                = [int]$Profile.Fps
         bitrateKbps        = [int]$Profile.VideoBitrateKbps
         requestFingerprint = $RequestFingerprint
+        publisherPid        = $PublisherPid
     } | ConvertTo-Json | Set-Content -LiteralPath $script:ActiveStreamSettingsPath -Encoding UTF8
 }
 
@@ -471,8 +495,8 @@ $appliedSettingsHash = $null
 try {
     while ($true) {
         if ($null -eq $publisherProcess) {
-            $requestedSettingsHash = Get-StreamSettingsFingerprint -SettingsPath $script:StreamSettingsPath
-            $profile = Get-EffectiveStreamProfile
+            $savedSettingsSnapshot = Get-SavedStreamSettingsSnapshot
+            $profile = Get-EffectiveStreamProfile -SettingsSnapshot $savedSettingsSnapshot
             $ffmpegArguments = New-FfmpegArgumentList -Profile $profile
 
             Write-Host "Using FFmpeg executable: $resolvedFfmpegExe" -ForegroundColor Cyan
@@ -485,8 +509,8 @@ try {
             Write-Host "Video profile: $($profile.Width)x$($profile.Height) @ $($profile.Fps)fps, $($profile.VideoBitrateKbps) kbps" -ForegroundColor Cyan
 
             $publisherProcess = Start-PublisherProcess -ExecutablePath $resolvedFfmpegExe -Arguments $ffmpegArguments
-            Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $requestedSettingsHash
-            $appliedSettingsHash = $requestedSettingsHash
+            Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $savedSettingsSnapshot.Fingerprint -PublisherPid $publisherProcess.Id
+            $appliedSettingsHash = $savedSettingsSnapshot.Fingerprint
         }
 
         if ($publisherProcess.HasExited) {

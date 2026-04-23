@@ -488,10 +488,14 @@ class MediaStackTests(unittest.TestCase):
         publisher_text = publisher_script.read_text(encoding="utf-8")
 
         self.assertIn("[string]$RequestFingerprint", publisher_text)
+        self.assertIn("[int]$PublisherPid", publisher_text)
         self.assertIn("requestFingerprint = $RequestFingerprint", publisher_text)
-        self.assertIn("$requestedSettingsHash = Get-StreamSettingsFingerprint", publisher_text)
+        self.assertIn("publisherPid", publisher_text)
+        self.assertIn("= $PublisherPid", publisher_text)
+        self.assertIn("function Get-SavedStreamSettingsSnapshot {", publisher_text)
+        self.assertIn("$savedSettingsSnapshot = Get-SavedStreamSettingsSnapshot", publisher_text)
         self.assertIn(
-            "Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $requestedSettingsHash",
+            "Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $savedSettingsSnapshot.Fingerprint -PublisherPid $publisherProcess.Id",
             publisher_text,
         )
 

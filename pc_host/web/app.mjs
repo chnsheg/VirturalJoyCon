@@ -849,7 +849,10 @@ async function pollAppliedStreamSettings(hostTarget) {
 }
 
 function requestedStreamSettingsFromPayload(payload) {
-  return normalizeStreamSettings(payload?.requested ?? payload);
+  return normalizeStreamSettings({
+    ...payload,
+    ...(payload?.requested ?? {}),
+  });
 }
 
 function applyStreamSettingsForm(settings = DEFAULT_STREAM_SETTINGS) {

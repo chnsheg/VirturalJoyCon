@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 from contextlib import suppress
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -150,8 +151,48 @@ def load_optional_stream_settings(settings_path: Path) -> dict[str, int] | None:
     return normalize_stream_settings(payload)
 
 
+def _read_required_integer(payload: Mapping[str, object], field_name: str) -> int | None:
+    if field_name not in payload or isinstance(payload[field_name], bool):
+        return None
+    try:
+        return int(payload[field_name])
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_active_stream_settings(payload: Mapping[str, object] | None) -> dict[str, object] | None:
+    if payload is None:
+        return None
+
+    raw_settings: dict[str, int] = {}
+    for field_name in ("width", "height", "fps", "bitrateKbps"):
+        value = _read_required_integer(payload, field_name)
+        if value is None:
+            return None
+        raw_settings[field_name] = value
+
+    request_fingerprint = str(payload.get("requestFingerprint") or "").strip().upper()
+    publisher_pid = _read_required_integer(payload, "publisherPid")
+    if not request_fingerprint or publisher_pid is None or publisher_pid <= 0:
+        return None
+
+    return {
+        **normalize_stream_settings(raw_settings),
+        "requestFingerprint": request_fingerprint,
+        "publisherPid": publisher_pid,
+    }
+
+
 def load_optional_active_stream_settings(settings_path: Path) -> dict[str, object] | None:
-    return _load_optional_json_mapping(settings_path)
+    return parse_active_stream_settings(_load_optional_json_mapping(settings_path))
+
+
+def is_process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def load_stream_settings(settings_path: Path) -> dict[str, int]:
@@ -175,7 +216,12 @@ def stream_settings_applied(
     if active_settings is None or not settings_fingerprint:
         return False
     active_fingerprint = str(active_settings.get("requestFingerprint") or "").strip().upper()
-    return active_fingerprint == settings_fingerprint
+    publisher_pid = active_settings.get("publisherPid")
+    return (
+        active_fingerprint == settings_fingerprint
+        and isinstance(publisher_pid, int)
+        and is_process_alive(publisher_pid)
+    )
 
 
 def get_stream_settings_fingerprint(settings_path: Path) -> str:

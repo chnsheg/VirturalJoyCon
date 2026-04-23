@@ -1248,10 +1248,7 @@ test("load stream settings hydrates the form from nested requested values when f
               fps: 60,
               bitrateKbps: 6000,
               requested: {
-                width: 1980,
-                height: 1080,
                 fps: 90,
-                bitrateKbps: 6000,
               },
               effective: {
                 width: 1980,
@@ -1303,10 +1300,7 @@ test("apply stream polls until the publisher reports the profile is active", asy
               fps: 60,
               bitrateKbps: 6000,
               requested: {
-                width: 1980,
-                height: 1080,
                 fps: 90,
-                bitrateKbps: 6000,
               },
               effective: {
                 width: 1980,
@@ -1332,10 +1326,7 @@ test("apply stream polls until the publisher reports the profile is active", asy
               fps: 60,
               bitrateKbps: 6000,
               requested: {
-                width: 1980,
-                height: 1080,
                 fps: 90,
-                bitrateKbps: 6000,
               },
               effective: {
                 width: 1980,

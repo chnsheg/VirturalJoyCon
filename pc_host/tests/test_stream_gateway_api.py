@@ -985,6 +985,40 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(payload["sourceCaps"]["fps"], 60)
         self.assertFalse(payload["applied"])
 
+    async def test_stream_settings_get_ignores_metadata_only_active_file_and_falls_back_to_requested_effective(
+        self,
+    ) -> None:
+        self.settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+        current_fingerprint = hashlib.sha256(self.settings_path.read_bytes()).hexdigest().upper()
+        self.active_settings_path.write_text(
+            json.dumps(
+                {
+                    "requestFingerprint": current_fingerprint,
+                    "publisherPid": 1234,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        response = await self.client.get("/api/stream/settings")
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            payload["effective"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        self.assertEqual(payload["fps"], 60)
+        self.assertFalse(payload["applied"])
+
     async def test_stream_settings_get_keeps_applied_false_until_active_fingerprint_matches_current_request(
         self,
     ) -> None:
@@ -1000,13 +1034,15 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "fps": 60,
                     "bitrateKbps": 9000,
                     "requestFingerprint": "STALE-FINGERPRINT",
+                    "publisherPid": 1234,
                 }
             ),
             encoding="utf-8",
         )
 
-        response = await self.client.get("/api/stream/settings")
-        payload = await response.json()
+        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+            response = await self.client.get("/api/stream/settings")
+            payload = await response.json()
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["width"], 1920)
@@ -1033,7 +1069,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         )
         self.assertFalse(payload["applied"])
 
-    async def test_stream_settings_get_reports_capped_request_as_applied_once_active_acknowledges_current_request(
+    async def test_stream_settings_get_keeps_applied_false_when_matching_active_fingerprint_has_dead_pid(
         self,
     ) -> None:
         self.settings_path.write_text(
@@ -1049,13 +1085,45 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "fps": 60,
                     "bitrateKbps": 9000,
                     "requestFingerprint": current_fingerprint,
+                    "publisherPid": 4321,
                 }
             ),
             encoding="utf-8",
         )
 
-        response = await self.client.get("/api/stream/settings")
-        payload = await response.json()
+        with patch.object(stream_gateway, "is_process_alive", return_value=False):
+            response = await self.client.get("/api/stream/settings")
+            payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["effective"]["fps"], 60)
+        self.assertFalse(payload["applied"])
+
+    async def test_stream_settings_get_reports_capped_request_as_applied_once_live_active_process_acknowledges_current_request(
+        self,
+    ) -> None:
+        self.settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+        current_fingerprint = hashlib.sha256(self.settings_path.read_bytes()).hexdigest().upper()
+        self.active_settings_path.write_text(
+            json.dumps(
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 60,
+                    "bitrateKbps": 9000,
+                    "requestFingerprint": current_fingerprint,
+                    "publisherPid": 1234,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+            response = await self.client.get("/api/stream/settings")
+            payload = await response.json()
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["width"], 1920)
@@ -1078,13 +1146,15 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "fps": 120,
                     "bitrateKbps": 9000,
                     "requestFingerprint": current_fingerprint,
+                    "publisherPid": 1234,
                 }
             ),
             encoding="utf-8",
         )
 
-        response = await self.client.get("/api/stream/settings")
-        payload = await response.json()
+        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+            response = await self.client.get("/api/stream/settings")
+            payload = await response.json()
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["effective"]["fps"], 60)
@@ -1159,21 +1229,23 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "fps": 60,
                     "bitrateKbps": 9000,
                     "requestFingerprint": current_fingerprint,
+                    "publisherPid": 1234,
                 }
             ),
             encoding="utf-8",
         )
 
-        response = await self.client.post(
-            "/api/stream/settings",
-            json={
-                "width": 1920,
-                "height": 1080,
-                "fps": 60,
-                "bitrateKbps": 9000,
-            },
-        )
-        payload = await response.json()
+        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+            response = await self.client.post(
+                "/api/stream/settings",
+                json={
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 60,
+                    "bitrateKbps": 9000,
+                },
+            )
+            payload = await response.json()
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["applied"], True)
