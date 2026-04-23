@@ -187,6 +187,41 @@ function Out-Null {{
         self.assertIn("Port 8082 is not listening yet", result.stdout)
         self.assertIn("Done. Host target: <LAN_IP>:8082", result.stdout)
 
+    def test_streaming_launcher_dry_run_emits_public_streaming_runtime_notes(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "start_lan_streaming_web_controller.ps1"
+        result = subprocess.run(
+            [
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-DryRun",
+                "-SkipDependencyInstall",
+                "-SkipFirewallCheck",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+        self.assertIn("Streaming runtime notes:", result.stdout)
+        self.assertIn(
+            "FRPC/public control path prefers WebRTC DataChannel; WebSocket stays warm and HTTP is last resort",
+            result.stdout,
+        )
+        self.assertIn(
+            "requested fps may be clamped to the source refresh rate or runtime caps",
+            result.stdout,
+        )
+        self.assertIn(
+            "effective stream profile: stream_gateway.py /api/stream/settings and .runtime/stream_settings.active.json",
+            result.stdout,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
