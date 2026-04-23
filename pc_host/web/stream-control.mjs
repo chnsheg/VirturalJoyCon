@@ -72,7 +72,7 @@ export function getControlHudText(mode) {
   return "control: idle";
 }
 
-export function computeControlMode({ hasDataChannel, hasWebSocketFallback }) {
+export function computeControlMode({ hasDataChannel, hasWebSocketFallback, hasHttpFallback }) {
   if (hasDataChannel) {
     return { label: "webrtc", degraded: false };
   }
@@ -81,7 +81,98 @@ export function computeControlMode({ hasDataChannel, hasWebSocketFallback }) {
     return { label: "ws", degraded: true };
   }
 
+  if (hasHttpFallback) {
+    return { label: "http", degraded: true };
+  }
+
   return { label: "idle", degraded: true };
+}
+
+function normalizeControlMode(mode) {
+  if (mode === "webrtc" || mode === "ws" || mode === "http" || mode === "idle") {
+    return mode;
+  }
+
+  return "idle";
+}
+
+function transitionWindowMs(fromMode, toMode, { degradeAfterMs, recoverAfterMs }) {
+  if (fromMode === "webrtc" && toMode !== "webrtc") {
+    return degradeAfterMs;
+  }
+
+  if (fromMode !== "webrtc" && toMode === "webrtc") {
+    return recoverAfterMs;
+  }
+
+  return 0;
+}
+
+export function createTransportHysteresis({
+  initialMode = "idle",
+  degradeAfterMs = 450,
+  recoverAfterMs = 250,
+} = {}) {
+  const windows = {
+    degradeAfterMs: Math.max(0, Number(degradeAfterMs) || 0),
+    recoverAfterMs: Math.max(0, Number(recoverAfterMs) || 0),
+  };
+  let visibleMode = normalizeControlMode(initialMode);
+  let candidateMode = null;
+  let candidateSinceMs = -Infinity;
+
+  function reset(mode = "idle") {
+    visibleMode = normalizeControlMode(mode);
+    candidateMode = null;
+    candidateSinceMs = -Infinity;
+    return visibleMode;
+  }
+
+  function update({ mode, nowMs = performance.now(), force = false } = {}) {
+    const nextMode = normalizeControlMode(mode);
+    const timestampMs = Number.isFinite(nowMs) ? nowMs : 0;
+
+    if (force) {
+      return reset(nextMode);
+    }
+
+    if (nextMode === visibleMode) {
+      candidateMode = null;
+      candidateSinceMs = -Infinity;
+      return visibleMode;
+    }
+
+    if (visibleMode === "idle") {
+      return reset(nextMode);
+    }
+
+    const windowMs = transitionWindowMs(visibleMode, nextMode, windows);
+    if (windowMs <= 0) {
+      return reset(nextMode);
+    }
+
+    if (candidateMode !== nextMode) {
+      candidateMode = nextMode;
+      candidateSinceMs = timestampMs;
+      return visibleMode;
+    }
+
+    if ((timestampMs - candidateSinceMs) >= windowMs) {
+      return reset(nextMode);
+    }
+
+    return visibleMode;
+  }
+
+  function getMode() {
+    return visibleMode;
+  }
+
+  return {
+    getMode,
+    reset,
+    update,
+  };
 }
 
 export async function negotiateControlPeer({

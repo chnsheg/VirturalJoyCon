@@ -264,6 +264,54 @@ test("LatestStateTransmitter prefers the rtc input datachannel when it is open",
   assert.equal(sent[0].buttons.a, true);
 });
 
+test("LatestStateTransmitter keeps websocket fallback latest-state semantics when rtc is unavailable", () => {
+  const sent = [];
+  const dataChannel = {
+    readyState: "closed",
+    bufferedAmount: 0,
+    send() {
+      throw new Error("closed datachannel should not receive fallback packets");
+    },
+  };
+  const socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(payload) {
+      sent.push(JSON.parse(payload));
+    },
+  };
+  const state = {
+    device_id: "phone-a",
+    client_session_id: "client-a",
+    input_stream_id: "stream-a",
+    buttons: { a: false },
+    sticks: { left: { nx: 0, ny: 0 }, right: { nx: 0, ny: 0 } },
+    triggers: { lt: 0, rt: 0 },
+  };
+
+  const transmitter = new LatestStateTransmitter({
+    getDataChannel: () => dataChannel,
+    getSocket: () => socket,
+    readState: () => state,
+    heartbeatMs: 250,
+    minIntervalMs: 8,
+    maxBufferedAmount: 64,
+  });
+
+  socket.bufferedAmount = 128;
+  state.sticks.right.nx = 0.25;
+  transmitter.markDirty();
+  assert.equal(transmitter.tryFlush(0), false);
+
+  state.sticks.right.nx = 0.75;
+  socket.bufferedAmount = 0;
+  assert.equal(transmitter.tryFlush(8), "ws");
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].seq, 1);
+  assert.equal(sent[0].sticks.right.nx, 0.75);
+});
+
 test("LatencyTracker smooths ping samples and expires stale values", () => {
   const tracker = new LatencyTracker({ maxSamples: 5, staleAfterMs: 2500 });
 

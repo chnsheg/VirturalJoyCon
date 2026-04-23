@@ -357,6 +357,7 @@ function installAppHarness({
   const timers = new Map();
   let nextTimerId = 1;
   const webSockets = [];
+  const rtcPeers = [];
   const fetchCalls = [];
   const animationFrameCallbacks = [];
   const videoFrameCallbacks = [];
@@ -544,6 +545,7 @@ function installAppHarness({
       this.remoteDescription = null;
       this.channels = [];
       this.transceivers = [];
+      rtcPeers.push(this);
     }
 
     addTransceiver(kind, options) {
@@ -703,6 +705,7 @@ function installAppHarness({
     controllerEl,
     timers,
     webSockets,
+    rtcPeers,
     fetchCalls,
     fullscreenRequests,
     orientationLocks,
@@ -1735,7 +1738,8 @@ test("failed stale resync reconciles the control hud after releasing the webrtc 
 
   assert.ok(resumedRoomCalls > initialRoomCalls, "expected failed stale resync to retry the room session");
   assert.equal(controlOfferCalls, 2);
-  assert.equal(harness.transportModeEl.textContent, "control: idle");
+  assert.notEqual(harness.transportModeEl.textContent, "control: webrtc");
+  assert.equal(harness.transportModeEl.textContent, "control: websocket degraded");
 });
 
 test("stream telemetry hud does not re-render on every animation frame between one-second samples", async (t) => {
@@ -1829,6 +1833,36 @@ test("transport hud stays on webrtc while the rtc input channel is alive", async
 
   harness.webSockets[0].serverClose();
 
+  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
+});
+
+test("websocket fallback stays warm without immediately flipping the visible hud during transient rtc recovery", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-rtc-hysteresis-warm-fallback`);
+  await harness.settle();
+
+  const controlPeer = harness.rtcPeers.find((peer) => peer.channels.some((channel) => channel.label === "joycon.input.v1"));
+  assert.ok(controlPeer, "expected a negotiated rtc control peer");
+
+  const inputChannel = controlPeer.channels.find((channel) => channel.label === "joycon.input.v1");
+  assert.ok(inputChannel, "expected an rtc input datachannel");
+
+  harness.webSockets[0].serverClose();
+  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
+
+  inputChannel.readyState = "closing";
+  inputChannel.dispatch("closing");
+  await harness.settle();
+  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
+
+  inputChannel.readyState = "open";
+  inputChannel.dispatch("open");
+  await harness.settle();
   assert.equal(harness.transportModeEl.textContent, "control: webrtc");
 });
 

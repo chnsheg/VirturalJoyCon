@@ -8,6 +8,7 @@ import {
   createControlOfferPayload,
   createInputChannelOptions,
   computeControlMode,
+  createTransportHysteresis,
   getControlHudText,
   negotiateControlPeer,
   shouldDropPendingAnalogState,
@@ -131,15 +132,45 @@ test("getControlHudText marks tcp fallback modes as degraded", () => {
 
 test("computeControlMode prefers datachannel and marks fallbacks degraded", () => {
   assert.deepEqual(
-    computeControlMode({ hasDataChannel: true, hasWebSocketFallback: true }),
+    computeControlMode({ hasDataChannel: true, hasWebSocketFallback: true, hasHttpFallback: true }),
     { label: "webrtc", degraded: false },
   );
   assert.deepEqual(
-    computeControlMode({ hasDataChannel: false, hasWebSocketFallback: true }),
+    computeControlMode({ hasDataChannel: false, hasWebSocketFallback: true, hasHttpFallback: true }),
     { label: "ws", degraded: true },
   );
   assert.deepEqual(
-    computeControlMode({ hasDataChannel: false, hasWebSocketFallback: false }),
+    computeControlMode({ hasDataChannel: false, hasWebSocketFallback: false, hasHttpFallback: true }),
+    { label: "http", degraded: true },
+  );
+  assert.deepEqual(
+    computeControlMode({ hasDataChannel: false, hasWebSocketFallback: false, hasHttpFallback: false }),
     { label: "idle", degraded: true },
   );
+});
+
+test("transport hysteresis delays visible degrade from webrtc to websocket fallback", () => {
+  const hysteresis = createTransportHysteresis({
+    initialMode: "webrtc",
+    degradeAfterMs: 500,
+    recoverAfterMs: 300,
+  });
+
+  assert.equal(hysteresis.update({ mode: "webrtc", nowMs: 0 }), "webrtc");
+  assert.equal(hysteresis.update({ mode: "ws", nowMs: 100 }), "webrtc");
+  assert.equal(hysteresis.update({ mode: "ws", nowMs: 599 }), "webrtc");
+  assert.equal(hysteresis.update({ mode: "ws", nowMs: 600 }), "ws");
+});
+
+test("transport hysteresis delays visible recovery from websocket fallback to webrtc", () => {
+  const hysteresis = createTransportHysteresis({
+    initialMode: "ws",
+    degradeAfterMs: 500,
+    recoverAfterMs: 300,
+  });
+
+  assert.equal(hysteresis.update({ mode: "ws", nowMs: 0 }), "ws");
+  assert.equal(hysteresis.update({ mode: "webrtc", nowMs: 100 }), "ws");
+  assert.equal(hysteresis.update({ mode: "webrtc", nowMs: 399 }), "ws");
+  assert.equal(hysteresis.update({ mode: "webrtc", nowMs: 400 }), "webrtc");
 });
