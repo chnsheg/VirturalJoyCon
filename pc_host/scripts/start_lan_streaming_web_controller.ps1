@@ -966,3 +966,9 @@ if ($lanAddresses.Count -eq 0) {
         Write-Host "  Media WHEP: http://$($address.IPAddress):8889/game/whep" -ForegroundColor Green
     }
 }
+
+Write-Host ""
+Write-Host "Streaming runtime notes:" -ForegroundColor Cyan
+Write-Host "  FRPC/public control path prefers WebRTC DataChannel; WebSocket stays warm and HTTP is last resort" -ForegroundColor DarkGray
+Write-Host "  requested fps may be clamped to the source refresh rate or runtime caps" -ForegroundColor DarkGray
+Write-Host "  effective stream profile: stream_gateway.py /api/stream/settings and .runtime/stream_settings.active.json" -ForegroundColor DarkGray

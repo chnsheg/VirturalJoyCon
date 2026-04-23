@@ -412,6 +412,11 @@ class MediaStackTests(unittest.TestCase):
         self.assertNotIn("WebRtcControlProgram", launcher_text)
         self.assertNotIn("49152-65535", launcher_text)
         self.assertIn("Media WHEP: http://$($address.IPAddress):8889/game/whep", launcher_text)
+        self.assertIn("FRPC", launcher_text)
+        self.assertIn("public control path prefers WebRTC DataChannel", launcher_text)
+        self.assertIn("requested fps may be clamped to the source refresh rate", launcher_text)
+        self.assertIn("/api/stream/settings", launcher_text)
+        self.assertIn("effective stream profile", launcher_text)
 
         stop_text = stop_script.read_text(encoding="utf-8")
         self.assertIn("Stop-Process -Id", stop_text)
@@ -462,6 +467,9 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("只会占用当前这个 PowerShell 窗口", readme_text)
         self.assertIn("后台进程日志", readme_text)
         self.assertNotIn("## Streaming stack quick start", readme_text)
+        self.assertNotIn("Moonlight-equivalent", readme_text)
+        self.assertNotIn("Moonlight equivalent", readme_text)
+        self.assertNotIn("guaranteed TCP media fallback", readme_text)
 
     def test_publisher_runtime_profile_is_not_locked_by_launch_time_dimensions(self) -> None:
         publisher_script = PROJECT_ROOT / "scripts" / "start_stream_publisher.ps1"
