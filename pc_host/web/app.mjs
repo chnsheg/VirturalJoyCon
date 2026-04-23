@@ -24,10 +24,10 @@ import {
   createTransportHysteresis,
   getControlHudText,
   negotiateControlPeer,
-} from "./stream-control.mjs";
-import { classifyStreamHealth, createInitialStreamHealth } from "./stream-health.mjs";
+} from "./stream-control.mjs?v=stream-20260423-5";
+import { classifyStreamHealth, createInitialStreamHealth } from "./stream-health.mjs?v=stream-20260423-5";
 import { createStreamCanvasRenderer, subscribeViaWhep } from "./stream-media.mjs?v=stream-20260423-3";
-import { createInitialStreamState, createRoomSessionClient, roomStatusText } from "./stream-session.mjs";
+import { createInitialStreamState, createRoomSessionClient, roomStatusText } from "./stream-session.mjs?v=stream-20260423-5";
 
 const connEl = document.getElementById("conn");
 const slotEl = document.getElementById("slot");
@@ -363,10 +363,10 @@ function readFallbackLatencyMs(nowMs) {
   return numericValue;
 }
 
-function readMediaRoundTripTimeMs(videoStats) {
+function readRoundTripTimeMs(stats) {
   const roundTripTime = Number(
-    videoStats?.roundTripTime
-    ?? videoStats?.currentRoundTripTime,
+    stats?.roundTripTime
+    ?? stats?.currentRoundTripTime,
   );
   if (!Number.isFinite(roundTripTime) || roundTripTime < 0) {
     return null;
@@ -375,7 +375,65 @@ function readMediaRoundTripTimeMs(videoStats) {
   return roundTripTime <= 10 ? roundTripTime * 1000 : roundTripTime;
 }
 
-function updateStreamHealth(nowMs, { progress = readVideoProgress(remoteVideoEl), videoStats = null } = {}) {
+function selectCandidatePairStats(report, videoStats) {
+  if (!report || typeof report.forEach !== "function") {
+    return null;
+  }
+
+  if (typeof report.get === "function" && videoStats?.transportId) {
+    const transportStats = report.get(videoStats.transportId);
+    const candidatePairId = transportStats?.selectedCandidatePairId;
+    if (candidatePairId) {
+      const selectedCandidatePair = report.get(candidatePairId);
+      if (selectedCandidatePair) {
+        return selectedCandidatePair;
+      }
+    }
+  }
+
+  let selected = null;
+  report.forEach((stat) => {
+    if (selected || !stat || stat.type !== "candidate-pair") {
+      return;
+    }
+
+    if (stat.nominated === true || stat.selected === true || stat.state === "succeeded") {
+      selected = stat;
+    }
+  });
+
+  return selected;
+}
+
+function selectRemoteInboundVideoStats(report) {
+  if (!report || typeof report.forEach !== "function") {
+    return null;
+  }
+
+  let selected = null;
+  report.forEach((stat) => {
+    if (selected || !stat) {
+      return;
+    }
+
+    const isVideo = stat.kind === "video" || stat.mediaType === "video";
+    if (stat.type === "remote-inbound-rtp" && isVideo) {
+      selected = stat;
+    }
+  });
+
+  return selected;
+}
+
+function readMediaRoundTripTimeMs(report, videoStats) {
+  return (
+    readRoundTripTimeMs(videoStats)
+    ?? readRoundTripTimeMs(selectCandidatePairStats(report, videoStats))
+    ?? readRoundTripTimeMs(selectRemoteInboundVideoStats(report))
+  );
+}
+
+function updateStreamHealth(nowMs, { progress = readVideoProgress(remoteVideoEl), report = null, videoStats = null } = {}) {
   if (!activeMediaPeer) {
     streamHealth = createInitialStreamHealth();
     return streamHealth;
@@ -391,7 +449,7 @@ function updateStreamHealth(nowMs, { progress = readVideoProgress(remoteVideoEl)
     frameCount: progress.frameCount,
     currentTime: progress.currentTime,
     freezeCount,
-    mediaRoundTripTimeMs: readMediaRoundTripTimeMs(videoStats),
+    mediaRoundTripTimeMs: readMediaRoundTripTimeMs(report, videoStats),
     fallbackLatencyMs: readFallbackLatencyMs(nowMs),
   });
 
@@ -633,7 +691,7 @@ async function pollStreamTelemetry(nowMs) {
         lossPercent: smoothTelemetryMetric(currentStreamTelemetryMetrics.lossPercent, metrics.lossPercent),
       };
     }
-    updateStreamHealth(nowMs, { progress, videoStats });
+    updateStreamHealth(nowMs, { progress, report, videoStats });
     renderStreamTelemetry(nowMs);
   } catch {
     updateStreamHealth(nowMs, { progress });

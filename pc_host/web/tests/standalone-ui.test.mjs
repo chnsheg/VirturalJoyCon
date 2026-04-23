@@ -872,6 +872,13 @@ test("index.html cache-busts the top-level frontend assets", async () => {
   assert.match(html, /src="\/app\.mjs\?v=[^"]+"/);
 });
 
+test("app.mjs cache-busts changed stream support modules", async () => {
+  const appSource = await readFile(resolve(here, "../app.mjs"), "utf8");
+  assert.match(appSource, /from "\.\/stream-control\.mjs\?v=[^"]+"/);
+  assert.match(appSource, /from "\.\/stream-health\.mjs\?v=[^"]+"/);
+  assert.match(appSource, /from "\.\/stream-session\.mjs\?v=[^"]+"/);
+});
+
 test("index.html points users at the streaming gateway port", async () => {
   const html = await readFile(resolve(here, "../index.html"), "utf8");
   assert.match(html, /placeholder="192\.168\.0\.10:8082"/);
@@ -1652,6 +1659,123 @@ test("stale recovery re-subscribes media without forcing room or control churn w
   assert.ok(resumedMediaCalls > initialMediaCalls, "expected stale recovery to re-subscribe media");
   assert.equal(controlOfferCalls, initialControlOfferCalls, "expected stale recovery to avoid renegotiating control when media refresh succeeds");
   assert.equal(harness.webSockets.length, initialSocketCount, "expected stale recovery to avoid websocket churn when media refresh succeeds");
+});
+
+test("stale recovery uses selected candidate-pair latency when inbound video stats omit round trip time", async (t) => {
+  let statsReads = 0;
+  let controlOfferCalls = 0;
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    playbackQualityImpl: () => ({
+      totalVideoFrames: 120,
+      currentTime: 2,
+    }),
+    rtcGetStatsImpl: () => {
+      statsReads += 1;
+      const roundTripTime = statsReads === 1 ? 0.04 : 0.09;
+      return new Map([
+        [
+          "video-inbound",
+          {
+            type: "inbound-rtp",
+            kind: "video",
+            framesDecoded: 120,
+            bytesReceived: 1200000,
+            packetsReceived: 1000,
+            packetsLost: 0,
+          },
+        ],
+        [
+          "selected-pair",
+          {
+            type: "candidate-pair",
+            nominated: true,
+            state: "succeeded",
+            currentRoundTripTime: roundTripTime,
+          },
+        ],
+      ]);
+    },
+    fetchImpl: async (url) => {
+      if (/\/api\/room\/(join|reconnect)$/.test(String(url))) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 1,
+              seat_epoch: 1,
+              reconnect_token: "reconnect-fixed",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/control/offer")) {
+        controlOfferCalls += 1;
+        return {
+          ok: true,
+          async json() {
+            return {
+              type: "answer",
+              sdp: "control-answer",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/stream/settings")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1280,
+              height: 720,
+              fps: 60,
+              bitrateKbps: 6000,
+              applied: false,
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {};
+        },
+        async text() {
+          return "v=0\r\n";
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-candidate-pair-rtt`);
+  await harness.settle();
+
+  const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const initialMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+  const initialControlOfferCalls = controlOfferCalls;
+
+  harness.runAnimationFrame(0);
+  await harness.settle();
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+  harness.runAnimationFrame(2800);
+  await harness.settle();
+
+  const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const resumedMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+
+  assert.equal(resumedRoomCalls, initialRoomCalls, "expected selected-pair RTT stale recovery to avoid room reconnect");
+  assert.ok(resumedMediaCalls > initialMediaCalls, "expected selected-pair RTT stale recovery to re-subscribe media");
+  assert.equal(controlOfferCalls, initialControlOfferCalls, "expected selected-pair RTT stale recovery to avoid control renegotiation");
 });
 
 test("failed media-only stale recovery escalates to the broader reconnect path", async (t) => {
