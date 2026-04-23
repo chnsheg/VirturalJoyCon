@@ -64,12 +64,13 @@ class RuntimeNotesTests(unittest.TestCase):
             access_urls=["http://192.168.0.119:8082"],
         )
         note_text = "\n".join(notes)
+        note_text_lower = note_text.lower()
 
-        self.assertNotIn("Public control path prefers WebRTC DataChannel", note_text)
-        self.assertNotIn("Requested FPS may be clamped to the source refresh rate", note_text)
-        self.assertNotIn("effective stream profile", note_text)
-        self.assertNotIn("stream_gateway.py /api/stream/settings", note_text)
-        self.assertNotIn("/api/stream/settings", note_text)
+        self.assertNotIn("public control path prefers webrtc datachannel", note_text_lower)
+        self.assertNotIn("requested fps may be clamped to the source refresh rate", note_text_lower)
+        self.assertNotIn("effective stream profile", note_text_lower)
+        self.assertNotIn("stream_gateway.py /api/stream/settings", note_text_lower)
+        self.assertNotIn("/api/stream/settings", note_text_lower)
 
     def test_fix_network_access_skip_udp_removes_stale_udp_rule(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "fix_network_access.ps1"

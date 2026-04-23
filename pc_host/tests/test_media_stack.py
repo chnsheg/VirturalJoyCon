@@ -528,6 +528,7 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("effective stream profile", design_text)
         self.assertNotIn("Moonlight-equivalent", design_text)
         self.assertNotIn("Moonlight equivalent", design_text)
+        self.assertIn("Do not describe a guaranteed TCP media fallback path for video", design_text)
 
 
 if __name__ == "__main__":
