@@ -1523,103 +1523,18 @@ test("stream telemetry falls back to decoded video progress when rtc stats omit 
   assert.match(harness.streamTelemetryEl.textContent, /fps/i);
 });
 
-test("frozen media telemetry surfaces recovery without downgrading the control hud immediately", async (t) => {
+test("stale recovery re-subscribes media without forcing room or control churn when freeze count is unavailable", async (t) => {
   let playbackReads = 0;
   let statsReads = 0;
-  const harness = installAppHarness({
-    savedHostTarget: "192.168.0.10:8081",
-    enableRtc: true,
-    playbackQualityImpl: () => {
-      playbackReads += 1;
-      if (playbackReads <= 3) {
-        return {
-          totalVideoFrames: 120,
-          currentTime: 2,
-          freezeCount: 0,
-        };
-      }
-      return {
-        totalVideoFrames: 120,
-        currentTime: 2,
-        freezeCount: 1,
-      };
-    },
-    rtcGetStatsImpl: () => {
-      statsReads += 1;
-      if (statsReads === 1) {
-        return new Map([
-          [
-            "video-track",
-            {
-              type: "track",
-              kind: "video",
-              framesDecoded: 120,
-              bytesReceived: 1200000,
-              packetsReceived: 1000,
-              packetsLost: 0,
-              freezeCount: 0,
-            },
-          ],
-        ]);
-      }
-
-      return new Map([
-        [
-          "video-track",
-          {
-            type: "track",
-            kind: "video",
-            framesDecoded: 120,
-            bytesReceived: 1200000,
-            packetsReceived: 1000,
-            packetsLost: 0,
-            freezeCount: 1,
-          },
-        ],
-      ]);
-    },
-  });
-  t.after(() => harness.restore());
-
-  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-frozen`);
-  await harness.settle();
-
-  const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
-  const initialMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
-
-  harness.runAnimationFrame(0);
-  harness.runAnimationFrame(1200);
-  await harness.settle();
-
-  const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
-  const resumedMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
-
-  assert.match(harness.streamTelemetryEl.textContent, /frozen|recovering/i);
-  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
-  assert.ok(resumedRoomCalls > initialRoomCalls, "expected frozen media to trigger room resync");
-  assert.ok(resumedMediaCalls > initialMediaCalls, "expected frozen media to trigger media resubscribe");
-});
-
-test("failed stale resync reconciles the control hud after releasing the webrtc hold", async (t) => {
   let controlOfferCalls = 0;
-  let playbackReads = 0;
-  let statsReads = 0;
   const harness = installAppHarness({
     savedHostTarget: "192.168.0.10:8081",
     enableRtc: true,
     playbackQualityImpl: () => {
       playbackReads += 1;
-      if (playbackReads <= 3) {
-        return {
-          totalVideoFrames: 120,
-          currentTime: 2,
-          freezeCount: 0,
-        };
-      }
       return {
         totalVideoFrames: 120,
         currentTime: 2,
-        freezeCount: 1,
       };
     },
     rtcGetStatsImpl: () => {
@@ -1635,7 +1550,7 @@ test("failed stale resync reconciles the control hud after releasing the webrtc 
               bytesReceived: 1200000,
               packetsReceived: 1000,
               packetsLost: 0,
-              freezeCount: 0,
+              roundTripTime: 0.04,
             },
           ],
         ]);
@@ -1651,12 +1566,12 @@ test("failed stale resync reconciles the control hud after releasing the webrtc 
             bytesReceived: 1200000,
             packetsReceived: 1000,
             packetsLost: 0,
-            freezeCount: 1,
+            roundTripTime: 0.09,
           },
         ],
       ]);
     },
-    fetchImpl: async (url, init = {}) => {
+    fetchImpl: async (url) => {
       if (/\/api\/room\/(join|reconnect)$/.test(String(url))) {
         return {
           ok: true,
@@ -1675,23 +1590,13 @@ test("failed stale resync reconciles the control hud after releasing the webrtc 
 
       if (String(url).includes("/api/control/offer")) {
         controlOfferCalls += 1;
-        if (controlOfferCalls === 1) {
-          return {
-            ok: true,
-            async json() {
-              return {
-                type: "answer",
-                sdp: "control-answer",
-              };
-            },
-          };
-        }
-
         return {
-          ok: false,
-          status: 503,
+          ok: true,
           async json() {
-            return {};
+            return {
+              type: "answer",
+              sdp: "control-answer",
+            };
           },
         };
       }
@@ -1725,21 +1630,176 @@ test("failed stale resync reconciles the control hud after releasing the webrtc 
   });
   t.after(() => harness.restore());
 
-  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-frozen-control-fail`);
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-stale-media-only`);
   await harness.settle();
 
   const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const initialMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+  const initialSocketCount = harness.webSockets.length;
+  const initialControlOfferCalls = controlOfferCalls;
 
   harness.runAnimationFrame(0);
+  await harness.settle();
   harness.runAnimationFrame(1200);
+  await harness.settle();
+  harness.runAnimationFrame(2800);
   await harness.settle();
 
   const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const resumedMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
 
-  assert.ok(resumedRoomCalls > initialRoomCalls, "expected failed stale resync to retry the room session");
-  assert.equal(controlOfferCalls, 2);
-  assert.notEqual(harness.transportModeEl.textContent, "control: webrtc");
-  assert.equal(harness.transportModeEl.textContent, "control: websocket degraded");
+  assert.equal(resumedRoomCalls, initialRoomCalls, "expected stale recovery to avoid room reconnect when media refresh succeeds");
+  assert.ok(resumedMediaCalls > initialMediaCalls, "expected stale recovery to re-subscribe media");
+  assert.equal(controlOfferCalls, initialControlOfferCalls, "expected stale recovery to avoid renegotiating control when media refresh succeeds");
+  assert.equal(harness.webSockets.length, initialSocketCount, "expected stale recovery to avoid websocket churn when media refresh succeeds");
+});
+
+test("failed media-only stale recovery escalates to the broader reconnect path", async (t) => {
+  let mediaCalls = 0;
+  let playbackReads = 0;
+  let statsReads = 0;
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    playbackQualityImpl: () => {
+      playbackReads += 1;
+      return {
+        totalVideoFrames: 120,
+        currentTime: 2,
+      };
+    },
+    rtcGetStatsImpl: () => {
+      statsReads += 1;
+      if (statsReads === 1) {
+        return new Map([
+          [
+            "video-track",
+            {
+              type: "track",
+              kind: "video",
+              framesDecoded: 120,
+              bytesReceived: 1200000,
+              packetsReceived: 1000,
+              packetsLost: 0,
+              roundTripTime: 0.04,
+            },
+          ],
+        ]);
+      }
+
+      return new Map([
+        [
+          "video-track",
+          {
+            type: "track",
+            kind: "video",
+            framesDecoded: 120,
+            bytesReceived: 1200000,
+            packetsReceived: 1000,
+            packetsLost: 0,
+            roundTripTime: 0.09,
+          },
+        ],
+      ]);
+    },
+    fetchImpl: async (url, init = {}) => {
+      if (/\/api\/room\/(join|reconnect)$/.test(String(url))) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 1,
+              seat_epoch: 1,
+              reconnect_token: "reconnect-fixed",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/control/offer")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              type: "answer",
+              sdp: "control-answer",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/stream/settings")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1280,
+              height: 720,
+              fps: 60,
+              bitrateKbps: 6000,
+              applied: false,
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/media/whep")) {
+        mediaCalls += 1;
+        if (mediaCalls === 2) {
+          return {
+            ok: false,
+            status: 503,
+            async text() {
+              return "";
+            },
+          };
+        }
+
+        return {
+          ok: true,
+          async text() {
+            return "v=0\r\n";
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {};
+        },
+        async text() {
+          return "v=0\r\n";
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-stale-fallback`);
+  await harness.settle();
+
+  const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const initialMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+  const initialSocketCount = harness.webSockets.length;
+
+  harness.runAnimationFrame(0);
+  await harness.settle();
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+  harness.runAnimationFrame(2800);
+  await harness.settle();
+
+  const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const resumedMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+
+  assert.ok(resumedMediaCalls >= initialMediaCalls + 2, "expected stale recovery to try media-only refresh before escalating");
+  assert.ok(resumedRoomCalls > initialRoomCalls, "expected failed stale recovery to retry the room session");
+  assert.ok(harness.webSockets.length > initialSocketCount, "expected failed stale recovery to reconnect websocket fallback during escalation");
 });
 
 test("stream telemetry hud does not re-render on every animation frame between one-second samples", async (t) => {

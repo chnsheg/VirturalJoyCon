@@ -1,6 +1,7 @@
 const PLAYBACK_EPSILON_SECONDS = 0.001;
 const STRESS_LATENCY_RATIO = 1.8;
 const STRESS_STALL_MS = 900;
+const LATENCY_FROZEN_STALL_MS = 1800;
 const FREEZE_STALL_MS = 3600;
 
 function toFiniteOrNull(value) {
@@ -97,8 +98,15 @@ export function classifyStreamHealth(previousHealth = createInitialStreamHealth(
     latencyMs !== null && baselineLatencyMs !== null && baselineLatencyMs > 0
       ? latencyMs / baselineLatencyMs
       : Number.NaN;
+  const latencyStalledFreeze =
+    previous.initialized
+    && !playbackAdvanced
+    && stalledForMs >= LATENCY_FROZEN_STALL_MS
+    && Number.isFinite(latencyRatio)
+    && latencyRatio >= STRESS_LATENCY_RATIO;
   const isFrozen =
     freezeCountTriggered
+    || latencyStalledFreeze
     || (previous.initialized && !playbackAdvanced && stalledForMs >= FREEZE_STALL_MS);
   const isStressed =
     !isFrozen
@@ -110,7 +118,7 @@ export function classifyStreamHealth(previousHealth = createInitialStreamHealth(
 
   const status = isFrozen ? "frozen" : isStressed ? "stressed" : "healthy";
   const reason = isFrozen
-    ? (freezeCountTriggered ? "freeze-count" : "playback-stalled")
+    ? (freezeCountTriggered ? "freeze-count" : latencyStalledFreeze ? "latency-stalled" : "playback-stalled")
     : isStressed
       ? "latency-stalled"
       : "ok";

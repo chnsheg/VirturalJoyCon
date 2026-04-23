@@ -6,7 +6,7 @@ import {
   createInitialStreamHealth,
 } from "../stream-health.mjs";
 
-test("classifies stressed playback when fallback latency roughly doubles and playback stops advancing", () => {
+test("classifies stressed playback before recovery when fallback latency roughly doubles and playback stops advancing", () => {
   let health = createInitialStreamHealth();
 
   health = classifyStreamHealth(health, {
@@ -15,18 +15,12 @@ test("classifies stressed playback when fallback latency roughly doubles and pla
     frameCount: 120,
     currentTime: 2,
   });
-  health = classifyStreamHealth(health, {
-    nowMs: 1000,
-    fallbackLatencyMs: 44,
-    frameCount: 180,
-    currentTime: 3,
-  });
 
   const stressed = classifyStreamHealth(health, {
-    nowMs: 2200,
+    nowMs: 1000,
     fallbackLatencyMs: 86,
-    frameCount: 180,
-    currentTime: 3,
+    frameCount: 120,
+    currentTime: 2,
   });
 
   assert.equal(stressed.status, "stressed");
@@ -34,6 +28,30 @@ test("classifies stressed playback when fallback latency roughly doubles and pla
   assert.equal(stressed.playbackAdvanced, false);
   assert.equal(stressed.shouldRecover, false);
   assert.equal(stressed.latencySource, "fallback");
+});
+
+test("classifies frozen playback when a doubled-latency stall persists for roughly two seconds without freeze count support", () => {
+  let health = createInitialStreamHealth();
+
+  health = classifyStreamHealth(health, {
+    nowMs: 0,
+    fallbackLatencyMs: 42,
+    frameCount: 120,
+    currentTime: 2,
+  });
+
+  const frozen = classifyStreamHealth(health, {
+    nowMs: 2200,
+    fallbackLatencyMs: 86,
+    frameCount: 120,
+    currentTime: 2,
+  });
+
+  assert.equal(frozen.status, "frozen");
+  assert.equal(frozen.reason, "latency-stalled");
+  assert.equal(frozen.playbackAdvanced, false);
+  assert.equal(frozen.shouldRecover, true);
+  assert.equal(frozen.latencySource, "fallback");
 });
 
 test("classifies frozen playback when the browser freeze count increases", () => {

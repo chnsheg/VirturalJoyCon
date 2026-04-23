@@ -744,18 +744,30 @@ function closeStreamPeer(peer) {
   } catch {}
 }
 
-function resetStreamingState() {
-  streamAttempt += 1;
+function clearActiveMediaPeer() {
   closeStreamPeer(activeMediaPeer);
-  closeStreamPeer(activeControlPeer);
   activeMediaPeer = null;
-  activeControlPeer = null;
-  activeControlChannel = null;
-  activeInputChannel = null;
   streamRenderer.stop();
   if (remoteVideoEl) {
     remoteVideoEl.srcObject = null;
   }
+}
+
+function activateMediaPeer(mediaPeer, nowMs = performance.now()) {
+  activeMediaPeer = mediaPeer;
+  streamRenderer.start();
+  streamState.lastError = "";
+  updateStreamDegradedState();
+  resetStreamDiagnostics(nowMs);
+}
+
+function resetStreamingState() {
+  streamAttempt += 1;
+  clearActiveMediaPeer();
+  closeStreamPeer(activeControlPeer);
+  activeControlPeer = null;
+  activeControlChannel = null;
+  activeInputChannel = null;
   Object.assign(streamState, createInitialStreamState());
   forceControlHudMode("idle");
   resetStreamDiagnostics(performance.now());
@@ -816,11 +828,7 @@ async function connectStreaming(hostTarget) {
         closeStreamPeer(mediaPeer);
         return;
       }
-      activeMediaPeer = mediaPeer;
-      streamRenderer.start();
-      streamState.lastError = "";
-      updateStreamDegradedState();
-      resetStreamDiagnostics(performance.now());
+      activateMediaPeer(mediaPeer, performance.now());
     } catch {
       if (currentAttempt !== streamAttempt) {
         return;
@@ -896,6 +904,45 @@ async function connectStreaming(hostTarget) {
       staleHudFallbackMode: fallbackMode,
     };
   }
+}
+
+async function refreshStreamingMedia(hostTarget) {
+  if (!hostTarget || !activeMediaPeer) {
+    return { outcome: "failed" };
+  }
+
+  const currentAttempt = streamAttempt;
+  const previousMediaPeer = activeMediaPeer;
+
+  try {
+    const mediaPeer = await connectMedia(hostTarget);
+    if (currentAttempt !== streamAttempt) {
+      closeStreamPeer(mediaPeer);
+      return { outcome: "aborted" };
+    }
+    if (!mediaPeer) {
+      return { outcome: "failed" };
+    }
+
+    activeMediaPeer = mediaPeer;
+    closeStreamPeer(previousMediaPeer);
+    streamRenderer.start();
+    streamState.lastError = "";
+    updateStreamDegradedState();
+    resetStreamDiagnostics(performance.now());
+    return { outcome: "refreshed" };
+  } catch {
+    if (currentAttempt !== streamAttempt) {
+      return { outcome: "aborted" };
+    }
+    return { outcome: "failed" };
+  }
+}
+
+async function reconnectStreamingSession(hostTarget) {
+  closeSocketAndReconnectTimer();
+  connectWS();
+  return connectStreaming(hostTarget);
 }
 
 function updateHostText() {
@@ -1228,13 +1275,18 @@ async function resyncActiveStreaming(reason = "resume", { observedAtMs = perform
   }
   streamState.lastError = reason === "stale" ? "resyncing stream" : "";
   updateStreamDegradedState();
-  closeSocketAndReconnectTimer();
-  connectWS();
 
   let staleHudHoldShouldRelease = false;
   let staleHudFallbackMode = null;
   try {
-    const result = await connectStreaming(hostTarget);
+    if (reason === "stale") {
+      const mediaRefresh = await refreshStreamingMedia(hostTarget);
+      if (mediaRefresh.outcome === "refreshed" || mediaRefresh.outcome === "aborted") {
+        return;
+      }
+    }
+
+    const result = await reconnectStreamingSession(hostTarget);
     staleHudHoldShouldRelease = Boolean(result?.staleHudHoldShouldRelease);
     staleHudFallbackMode = result?.staleHudFallbackMode ?? null;
   } finally {
