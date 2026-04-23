@@ -162,7 +162,17 @@ def stream_settings_applied(
 ) -> bool:
     if active_settings is None:
         return False
-    return normalize_stream_settings(settings) == normalize_stream_settings(active_settings)
+    requested_effective = clamp_effective_profile(
+        _stream_profile_from_settings(settings),
+        source_caps=DEFAULT_SOURCE_CAPS,
+        runtime_caps=DEFAULT_RUNTIME_CAPS,
+    )
+    active_effective = clamp_effective_profile(
+        _stream_profile_from_settings(active_settings),
+        source_caps=DEFAULT_SOURCE_CAPS,
+        runtime_caps=DEFAULT_RUNTIME_CAPS,
+    )
+    return requested_effective == active_effective
 
 
 def _stream_profile_from_settings(settings: Mapping[str, object]) -> StreamProfile:
@@ -181,7 +191,11 @@ def _stream_settings_payload(
 ) -> dict[str, object]:
     requested = _stream_profile_from_settings(settings)
     effective = (
-        _stream_profile_from_settings(active_settings)
+        clamp_effective_profile(
+            _stream_profile_from_settings(active_settings),
+            source_caps=DEFAULT_SOURCE_CAPS,
+            runtime_caps=DEFAULT_RUNTIME_CAPS,
+        )
         if active_settings is not None
         else clamp_effective_profile(
             requested,

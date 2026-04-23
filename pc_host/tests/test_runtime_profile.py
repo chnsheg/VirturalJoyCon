@@ -23,7 +23,7 @@ class RuntimeProfileTests(unittest.TestCase):
             StreamProfile(width=1920, height=1080, fps=50, bitrate_kbps=9000),
         )
 
-    def test_build_stream_settings_payload_preserves_flat_effective_fields(self) -> None:
+    def test_build_stream_settings_payload_preserves_flat_requested_fields(self) -> None:
         requested = StreamProfile(width=1920, height=1080, fps=90, bitrate_kbps=9000)
         effective = StreamProfile(width=1920, height=1080, fps=60, bitrate_kbps=8500)
 
@@ -36,8 +36,8 @@ class RuntimeProfileTests(unittest.TestCase):
 
         self.assertEqual(payload["width"], 1920)
         self.assertEqual(payload["height"], 1080)
-        self.assertEqual(payload["fps"], 60)
-        self.assertEqual(payload["bitrateKbps"], 8500)
+        self.assertEqual(payload["fps"], 90)
+        self.assertEqual(payload["bitrateKbps"], 9000)
         self.assertEqual(
             payload["requested"],
             {

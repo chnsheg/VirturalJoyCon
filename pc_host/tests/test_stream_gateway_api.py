@@ -979,10 +979,65 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         )
         self.assertEqual(payload["width"], 1920)
         self.assertEqual(payload["height"], 1080)
-        self.assertEqual(payload["fps"], 60)
+        self.assertEqual(payload["fps"], 90)
         self.assertEqual(payload["bitrateKbps"], 9000)
         self.assertEqual(payload["sourceCaps"]["fps"], 60)
         self.assertFalse(payload["applied"])
+
+    async def test_stream_settings_get_reports_capped_request_as_applied_once_active_converges(self) -> None:
+        self.settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+        self.active_settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 60, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+
+        response = await self.client.get("/api/stream/settings")
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["width"], 1920)
+        self.assertEqual(payload["height"], 1080)
+        self.assertEqual(payload["fps"], 90)
+        self.assertEqual(payload["bitrateKbps"], 9000)
+        self.assertEqual(
+            payload["requested"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 90,
+                "bitrateKbps": 9000,
+            },
+        )
+        self.assertEqual(
+            payload["effective"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        self.assertTrue(payload["applied"])
+
+    async def test_stream_settings_get_reclamps_stale_active_profile_before_reporting_effective_values(self) -> None:
+        self.settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+        self.active_settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 120, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+
+        response = await self.client.get("/api/stream/settings")
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["effective"]["fps"], 60)
+        self.assertTrue(payload["applied"])
 
     async def test_stream_settings_get_reports_applied_when_the_active_profile_matches(self) -> None:
         self.settings_path.write_text(
@@ -1050,6 +1105,36 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["applied"], True)
 
+    async def test_stream_settings_post_preserves_flat_requested_fields_while_reporting_clamped_effective_profile(
+        self,
+    ) -> None:
+        response = await self.client.post(
+            "/api/stream/settings",
+            json={
+                "width": 1920,
+                "height": 1080,
+                "fps": 90,
+                "bitrateKbps": 9000,
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["width"], 1920)
+        self.assertEqual(payload["height"], 1080)
+        self.assertEqual(payload["fps"], 90)
+        self.assertEqual(payload["bitrateKbps"], 9000)
+        self.assertEqual(
+            payload["effective"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        self.assertFalse(payload["applied"])
+
     async def test_stream_settings_post_normalizes_even_dimensions_and_bitrate_step(self) -> None:
         response = await self.client.post(
             "/api/stream/settings",
@@ -1069,7 +1154,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                 "ok": True,
                 "width": 1980,
                 "height": 1078,
-                "fps": 60,
+                "fps": 61,
                 "bitrateKbps": 6100,
                 "requested": {
                     "width": 1980,
