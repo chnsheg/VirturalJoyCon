@@ -93,6 +93,7 @@ class WhepSdpFilterTests(unittest.TestCase):
                 "v=0",
                 "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
                 "a=candidate:2 1 UDP 2122252543 192.168.129.24 8189 typ host",
+                "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
                 "a=end-of-candidates",
                 "",
             ]
@@ -103,6 +104,10 @@ class WhepSdpFilterTests(unittest.TestCase):
         self.assertIn("192.168.0.112 8189 typ host", filtered)
         self.assertNotIn("10.0.0.7 8189 typ host", filtered)
         self.assertNotIn("192.168.129.24 8189 typ host", filtered)
+        self.assertIn(
+            "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
+            filtered,
+        )
         self.assertIn("a=end-of-candidates", filtered)
 
 
@@ -515,6 +520,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                         "v=0",
                         "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
                         "a=candidate:2 1 UDP 2122252543 192.168.0.112 8189 typ host",
+                        "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
                         "",
                     ]
                 ),
@@ -545,6 +551,10 @@ class StreamGatewayApiTests(AioHTTPTestCase):
             self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
             self.assertIn("192.168.0.112 8189 typ host", answer)
             self.assertNotIn("10.0.0.7 8189 typ host", answer)
+            self.assertIn(
+                "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
+                answer,
+            )
         finally:
             await client.close()
 
@@ -558,6 +568,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                         "v=0",
                         "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
                         "a=candidate:2 1 UDP 2122252543 192.168.129.24 8189 typ host",
+                        "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
                         "a=end-of-candidates",
                         "",
                     ]
@@ -589,6 +600,10 @@ class StreamGatewayApiTests(AioHTTPTestCase):
             self.assertIn("10.126.126.2 8189 typ host", answer)
             self.assertNotIn("10.0.0.7 8189 typ host", answer)
             self.assertNotIn("192.168.129.24 8189 typ host", answer)
+            self.assertIn(
+                "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
+                answer,
+            )
             self.assertIn("a=end-of-candidates", answer)
         finally:
             await client.close()

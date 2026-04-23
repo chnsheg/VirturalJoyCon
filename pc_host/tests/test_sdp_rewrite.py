@@ -27,6 +27,7 @@ class SdpRewriteTests(unittest.TestCase):
                 "v=0",
                 "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
                 "a=candidate:2 1 UDP 2122252543 192.168.0.112 8189 typ host",
+                "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
                 "a=end-of-candidates",
                 "",
             ]
@@ -36,6 +37,34 @@ class SdpRewriteTests(unittest.TestCase):
 
         self.assertIn("192.168.0.112 8189 typ host", filtered)
         self.assertNotIn("10.0.0.7 8189 typ host", filtered)
+        self.assertIn(
+            "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
+            filtered,
+        )
+        self.assertIn("a=end-of-candidates", filtered)
+        self.assertTrue(filtered.endswith("\r\n"))
+
+    def test_media_helper_rewrites_only_host_candidates_when_requested_host_is_missing(self) -> None:
+        answer = "\r\n".join(
+            [
+                "v=0",
+                "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
+                "a=candidate:2 1 UDP 2122252543 192.168.129.24 8189 typ host",
+                "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
+                "a=end-of-candidates",
+                "",
+            ]
+        )
+
+        filtered = filter_or_rewrite_media_answer(answer, preferred_host="192.168.0.112")
+
+        self.assertIn("192.168.0.112 8189 typ host", filtered)
+        self.assertNotIn("10.0.0.7 8189 typ host", filtered)
+        self.assertNotIn("192.168.129.24 8189 typ host", filtered)
+        self.assertIn(
+            "a=candidate:3 1 UDP 1694498815 203.0.113.44 62000 typ srflx raddr 10.0.0.7 rport 8189",
+            filtered,
+        )
         self.assertIn("a=end-of-candidates", filtered)
         self.assertTrue(filtered.endswith("\r\n"))
 

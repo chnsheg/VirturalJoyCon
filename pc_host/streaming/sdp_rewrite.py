@@ -63,11 +63,16 @@ def filter_or_rewrite_media_answer(answer_sdp: str, preferred_host: str) -> str:
 
     for raw_line in answer_sdp.splitlines():
         line = raw_line.rstrip("\r")
-        candidate_host = _candidate_host_from_sdp_line(line)
-        if candidate_host is None:
+        parts = _parse_candidate_parts(line)
+        if parts is None:
             filtered_lines.append(line)
             continue
 
+        if not _is_host_candidate_parts(parts):
+            filtered_lines.append(line)
+            continue
+
+        candidate_host = parts[4]
         if candidate_host == host_text:
             filtered_lines.append(line)
             kept_matching_candidate = True
