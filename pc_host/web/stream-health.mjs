@@ -55,7 +55,7 @@ export function classifyStreamHealth(previousHealth = createInitialStreamHealth(
   const nowMs = Number.isFinite(sample.nowMs) ? Number(sample.nowMs) : previous.updatedAtMs;
   const frameCount = Number.isFinite(sample.frameCount) ? Number(sample.frameCount) : previous.frameCount;
   const currentTime = Number.isFinite(sample.currentTime) ? Number(sample.currentTime) : previous.currentTime;
-  const freezeCount = Number.isFinite(sample.freezeCount) ? Number(sample.freezeCount) : null;
+  const freezeCount = Number.isFinite(sample.freezeCount) ? Number(sample.freezeCount) : previous.freezeCount;
   const { latencyMs, latencySource } = selectLatencyMs(
     sample.mediaRoundTripTimeMs,
     sample.fallbackLatencyMs,

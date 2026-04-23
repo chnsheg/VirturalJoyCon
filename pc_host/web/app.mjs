@@ -183,6 +183,7 @@ let lastTelemetryVideoSample = null;
 let streamResyncInFlight = false;
 let lastStreamResyncAt = -Infinity;
 let holdWebrtcControlHudDuringStreamResync = false;
+let deferredControlHudModeDuringStreamResync = null;
 let streamHealthRecoveryHudUntil = -Infinity;
 let appWasHidden = globalThis.document?.visibilityState === "hidden";
 let immersiveRequestInFlight = false;
@@ -649,14 +650,46 @@ function setControlHudMode(mode) {
     && controlHudMode === "webrtc"
     && mode !== "webrtc"
   ) {
+    deferredControlHudModeDuringStreamResync = mode;
     updateStreamDegradedState();
     renderStreamTelemetry(performance.now(), { force: true });
     return;
   }
 
+  if (mode === "webrtc") {
+    deferredControlHudModeDuringStreamResync = null;
+  }
   controlHudMode = mode;
   updateStreamDegradedState();
   renderStreamTelemetry(performance.now(), { force: true });
+}
+
+function releaseHeldWebrtcControlHud({ mode = null } = {}) {
+  if (!holdWebrtcControlHudDuringStreamResync) {
+    return;
+  }
+
+  holdWebrtcControlHudDuringStreamResync = false;
+  const deferredMode = deferredControlHudModeDuringStreamResync;
+  deferredControlHudModeDuringStreamResync = null;
+  if (mode && mode !== "webrtc") {
+    setControlHudMode(mode);
+    return;
+  }
+  if (deferredMode && deferredMode !== "webrtc") {
+    setControlHudMode(deferredMode);
+    return;
+  }
+  syncControlHudToTransport();
+}
+
+function maybeReleaseHeldWebrtcControlHud(nowMs = performance.now()) {
+  if (
+    holdWebrtcControlHudDuringStreamResync
+    && nowMs > streamHealthRecoveryHudUntil
+  ) {
+    releaseHeldWebrtcControlHud();
+  }
 }
 
 function syncControlHudToTransport() {
@@ -730,7 +763,10 @@ async function connectStreaming(hostTarget) {
   resetStreamingState();
   const target = String(hostTarget ?? "").trim();
   if (!target) {
-    return;
+    return {
+      staleHudHoldShouldRelease: false,
+      staleHudFallbackMode: null,
+    };
   }
 
   const currentAttempt = streamAttempt;
@@ -785,12 +821,19 @@ async function connectStreaming(hostTarget) {
 
     if (joined.role !== "player") {
       setControlHudMode("idle");
-      return;
+      return {
+        staleHudHoldShouldRelease: false,
+        staleHudFallbackMode: null,
+      };
     }
 
     if (typeof globalThis.RTCPeerConnection !== "function") {
-      setControlHudMode(transportMode === "http" ? "http" : "ws");
-      return;
+      const fallbackMode = transportMode === "http" ? "http" : "ws";
+      setControlHudMode(fallbackMode);
+      return {
+        staleHudHoldShouldRelease: false,
+        staleHudFallbackMode: fallbackMode,
+      };
     }
 
     try {
@@ -810,18 +853,38 @@ async function connectStreaming(hostTarget) {
       bindRtcChannelLifecycle(activeControlChannel);
       bindRtcChannelLifecycle(activeInputChannel);
       syncControlHudToTransport();
+      return {
+        staleHudHoldShouldRelease: false,
+        staleHudFallbackMode: null,
+      };
     } catch {
       if (currentAttempt !== streamAttempt) {
-        return;
+        return {
+          staleHudHoldShouldRelease: true,
+          staleHudFallbackMode: null,
+        };
       }
-      setControlHudMode(transportMode === "http" ? "http" : "ws");
+      const fallbackMode = transportMode === "http" ? "http" : "ws";
+      setControlHudMode(fallbackMode);
+      return {
+        staleHudHoldShouldRelease: true,
+        staleHudFallbackMode: fallbackMode,
+      };
     }
   } catch {
     if (currentAttempt !== streamAttempt) {
-      return;
+      return {
+        staleHudHoldShouldRelease: true,
+        staleHudFallbackMode: null,
+      };
     }
     Object.assign(streamState, createInitialStreamState(), { lastError: "join failed" });
-    setControlHudMode(transportMode === "http" ? "http" : "idle");
+    const fallbackMode = transportMode === "http" ? "http" : "idle";
+    setControlHudMode(fallbackMode);
+    return {
+      staleHudHoldShouldRelease: true,
+      staleHudFallbackMode: fallbackMode,
+    };
   }
 }
 
@@ -1158,13 +1221,21 @@ async function resyncActiveStreaming(reason = "resume", { observedAtMs = perform
   closeSocketAndReconnectTimer();
   connectWS();
 
+  let staleHudHoldShouldRelease = false;
+  let staleHudFallbackMode = null;
   try {
-    await connectStreaming(hostTarget);
+    const result = await connectStreaming(hostTarget);
+    staleHudHoldShouldRelease = Boolean(result?.staleHudHoldShouldRelease);
+    staleHudFallbackMode = result?.staleHudFallbackMode ?? null;
   } finally {
     streamResyncInFlight = false;
     resetStreamDiagnostics(performance.now());
     if (preserveWebrtcControlHud) {
-      holdWebrtcControlHudDuringStreamResync = false;
+      if (staleHudHoldShouldRelease) {
+        releaseHeldWebrtcControlHud({ mode: staleHudFallbackMode });
+      } else {
+        maybeReleaseHeldWebrtcControlHud(performance.now());
+      }
     }
   }
 }
@@ -1718,6 +1789,7 @@ function maybeSendWsPing(nowMs) {
 }
 
 function transportLoop(nowMs) {
+  maybeReleaseHeldWebrtcControlHud(nowMs);
   maybeSendWsPing(nowMs);
   const flushTransport = transmitter.tryFlush(nowMs);
   if (!flushTransport && activeInputChannel?.readyState !== "open" && (!ws || ws.readyState !== WebSocket.OPEN)) {

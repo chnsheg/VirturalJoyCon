@@ -1597,6 +1597,147 @@ test("frozen media telemetry surfaces recovery without downgrading the control h
   assert.ok(resumedMediaCalls > initialMediaCalls, "expected frozen media to trigger media resubscribe");
 });
 
+test("failed stale resync reconciles the control hud after releasing the webrtc hold", async (t) => {
+  let controlOfferCalls = 0;
+  let playbackReads = 0;
+  let statsReads = 0;
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    playbackQualityImpl: () => {
+      playbackReads += 1;
+      if (playbackReads <= 3) {
+        return {
+          totalVideoFrames: 120,
+          currentTime: 2,
+          freezeCount: 0,
+        };
+      }
+      return {
+        totalVideoFrames: 120,
+        currentTime: 2,
+        freezeCount: 1,
+      };
+    },
+    rtcGetStatsImpl: () => {
+      statsReads += 1;
+      if (statsReads === 1) {
+        return new Map([
+          [
+            "video-track",
+            {
+              type: "track",
+              kind: "video",
+              framesDecoded: 120,
+              bytesReceived: 1200000,
+              packetsReceived: 1000,
+              packetsLost: 0,
+              freezeCount: 0,
+            },
+          ],
+        ]);
+      }
+
+      return new Map([
+        [
+          "video-track",
+          {
+            type: "track",
+            kind: "video",
+            framesDecoded: 120,
+            bytesReceived: 1200000,
+            packetsReceived: 1000,
+            packetsLost: 0,
+            freezeCount: 1,
+          },
+        ],
+      ]);
+    },
+    fetchImpl: async (url, init = {}) => {
+      if (/\/api\/room\/(join|reconnect)$/.test(String(url))) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 1,
+              seat_epoch: 1,
+              reconnect_token: "reconnect-fixed",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/control/offer")) {
+        controlOfferCalls += 1;
+        if (controlOfferCalls === 1) {
+          return {
+            ok: true,
+            async json() {
+              return {
+                type: "answer",
+                sdp: "control-answer",
+              };
+            },
+          };
+        }
+
+        return {
+          ok: false,
+          status: 503,
+          async json() {
+            return {};
+          },
+        };
+      }
+
+      if (String(url).includes("/api/stream/settings")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1280,
+              height: 720,
+              fps: 60,
+              bitrateKbps: 6000,
+              applied: false,
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {};
+        },
+        async text() {
+          return "v=0\r\n";
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-frozen-control-fail`);
+  await harness.settle();
+
+  const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+
+  harness.runAnimationFrame(0);
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+
+  const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+
+  assert.ok(resumedRoomCalls > initialRoomCalls, "expected failed stale resync to retry the room session");
+  assert.equal(controlOfferCalls, 2);
+  assert.equal(harness.transportModeEl.textContent, "control: idle");
+});
+
 test("stream telemetry hud does not re-render on every animation frame between one-second samples", async (t) => {
   const harness = installAppHarness({
     savedHostTarget: "192.168.0.10:8081",

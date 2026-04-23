@@ -83,6 +83,43 @@ test("classifies frozen playback when freeze count first appears after earlier s
   assert.equal(frozen.shouldRecover, true);
 });
 
+test("omitted freeze count preserves the last observed cumulative value", () => {
+  let health = createInitialStreamHealth();
+
+  health = classifyStreamHealth(health, {
+    nowMs: 0,
+    fallbackLatencyMs: 35,
+    frameCount: 90,
+    currentTime: 1.5,
+    freezeCount: 0,
+  });
+  health = classifyStreamHealth(health, {
+    nowMs: 800,
+    fallbackLatencyMs: 38,
+    frameCount: 90,
+    currentTime: 1.5,
+    freezeCount: 1,
+  });
+
+  const omitted = classifyStreamHealth(health, {
+    nowMs: 1600,
+    fallbackLatencyMs: 40,
+    frameCount: 150,
+    currentTime: 2.5,
+  });
+  const repeated = classifyStreamHealth(omitted, {
+    nowMs: 2200,
+    fallbackLatencyMs: 42,
+    frameCount: 150,
+    currentTime: 2.5,
+    freezeCount: 1,
+  });
+
+  assert.equal(omitted.freezeCount, 1);
+  assert.equal(repeated.status, "healthy");
+  assert.equal(repeated.shouldRecover, false);
+});
+
 test("classifies frozen playback when the first observed sample already reports a positive freeze count", () => {
   const frozen = classifyStreamHealth(createInitialStreamHealth(), {
     nowMs: 0,
