@@ -204,6 +204,7 @@ const streamRenderer = createStreamCanvasRenderer({
 const transmitter = new LatestStateTransmitter({
   getSocket: () => ws,
   getDataChannel: () => activeInputChannel,
+  getPreferredTransport: () => resolvePreferredControlTransport(),
   readState: () => state,
   minIntervalMs: 8,
   heartbeatMs: 220,
@@ -391,18 +392,28 @@ function selectCandidatePairStats(report, videoStats) {
     }
   }
 
-  let selected = null;
+  const candidatePairs = [];
   report.forEach((stat) => {
-    if (selected || !stat || stat.type !== "candidate-pair") {
+    if (!stat || stat.type !== "candidate-pair") {
       return;
     }
-
-    if (stat.nominated === true || stat.selected === true || stat.state === "succeeded") {
-      selected = stat;
-    }
+    candidatePairs.push(stat);
   });
 
-  return selected;
+  if (candidatePairs.length !== 1) {
+    return null;
+  }
+
+  const [candidatePair] = candidatePairs;
+  if (
+    candidatePair.selected === true
+    || candidatePair.nominated === true
+    || candidatePair.state === "succeeded"
+  ) {
+    return candidatePair;
+  }
+
+  return null;
 }
 
 function selectRemoteInboundVideoStats(report) {
@@ -453,7 +464,11 @@ function updateStreamHealth(nowMs, { progress = readVideoProgress(remoteVideoEl)
     fallbackLatencyMs: readFallbackLatencyMs(nowMs),
   });
 
-  if (streamHealth.status === "healthy" || streamHealth.status === "stressed" || streamHealth.status === "frozen") {
+  if (
+    !streamResyncInFlight
+    && !holdWebrtcControlHudDuringStreamResync
+    && (streamHealth.status === "healthy" || streamHealth.status === "stressed" || streamHealth.status === "frozen")
+  ) {
     streamHealthRecoveryHudUntil = -Infinity;
   }
 
@@ -611,20 +626,28 @@ function selectInboundVideoStats(report) {
     return null;
   }
 
-  let selected = null;
+  let inboundVideo = null;
+  let trackVideo = null;
   report.forEach((stat) => {
     if (!stat) {
       return;
     }
 
     const isVideo = stat.kind === "video" || stat.mediaType === "video";
-    const isInboundVideo = stat.type === "inbound-rtp" && isVideo;
-    const isTrackVideo = stat.type === "track" && isVideo;
-    if (isInboundVideo || isTrackVideo) {
-      selected = stat;
+    if (!isVideo) {
+      return;
+    }
+
+    if (!inboundVideo && stat.type === "inbound-rtp") {
+      inboundVideo = stat;
+      return;
+    }
+
+    if (!trackVideo && stat.type === "track") {
+      trackVideo = stat;
     }
   });
-  return selected;
+  return inboundVideo ?? trackVideo;
 }
 
 async function pollStreamTelemetry(nowMs) {
@@ -748,6 +771,17 @@ function resolveRawControlMode() {
   }).label;
 }
 
+function resolvePreferredControlTransport() {
+  const mode = controlModeHysteresis.getMode();
+  if (mode === "webrtc") {
+    return "datachannel";
+  }
+  if (mode === "ws") {
+    return "ws";
+  }
+  return null;
+}
+
 function releaseHeldWebrtcControlHud({ mode = null } = {}) {
   if (!holdWebrtcControlHudDuringStreamResync) {
     return;
@@ -781,6 +815,13 @@ function syncControlHudToTransport() {
     mode: resolveRawControlMode(),
     nowMs: performance.now(),
   });
+  if (holdWebrtcControlHudDuringStreamResync) {
+    if (visibleMode !== "webrtc") {
+      deferredControlHudModeDuringStreamResync = visibleMode;
+    }
+    applyControlHudMode("webrtc");
+    return;
+  }
   applyControlHudMode(visibleMode);
 }
 
@@ -1324,9 +1365,13 @@ async function resyncActiveStreaming(reason = "resume", { observedAtMs = perform
 
   streamResyncInFlight = true;
   lastStreamResyncAt = nowMs;
-  const preserveWebrtcControlHud = reason === "stale" && controlHudMode === "webrtc";
+  const preserveWebrtcControlHud =
+    reason === "stale"
+    && (controlHudMode === "webrtc" || resolveRawControlMode() === "webrtc");
   if (preserveWebrtcControlHud) {
     holdWebrtcControlHudDuringStreamResync = true;
+    deferredControlHudModeDuringStreamResync = null;
+    forceControlHudMode("webrtc");
   }
   if (reason === "stale") {
     streamHealthRecoveryHudUntil = nowMs + Math.max(STREAM_TELEMETRY_POLL_MS, STREAM_RESYNC_COOLDOWN_MS);

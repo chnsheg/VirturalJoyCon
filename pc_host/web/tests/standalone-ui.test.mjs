@@ -558,6 +558,7 @@ function installAppHarness({
         options,
         readyState: "open",
         bufferedAmount: 0,
+        sentPackets: [],
         listeners: new Map(),
         addEventListener(type, listener) {
           const existing = this.listeners.get(type) ?? [];
@@ -569,7 +570,9 @@ function installAppHarness({
             listener(event);
           }
         },
-        send() {},
+        send(payload) {
+          this.sentPackets.push(JSON.parse(payload));
+        },
         close() {},
       };
       this.channels.push(channel);
@@ -877,6 +880,11 @@ test("app.mjs cache-busts changed stream support modules", async () => {
   assert.match(appSource, /from "\.\/stream-control\.mjs\?v=[^"]+"/);
   assert.match(appSource, /from "\.\/stream-health\.mjs\?v=[^"]+"/);
   assert.match(appSource, /from "\.\/stream-session\.mjs\?v=[^"]+"/);
+});
+
+test("stream-control.mjs cache-busts its stream-session dependency to avoid mixed module graphs", async () => {
+  const source = await readFile(resolve(here, "../stream-control.mjs"), "utf8");
+  assert.match(source, /from "\.\/stream-session\.mjs\?v=[^"]+"/);
 });
 
 test("index.html points users at the streaming gateway port", async () => {
@@ -1778,6 +1786,305 @@ test("stale recovery uses selected candidate-pair latency when inbound video sta
   assert.equal(controlOfferCalls, initialControlOfferCalls, "expected selected-pair RTT stale recovery to avoid control renegotiation");
 });
 
+test("ambiguous candidate-pair reports fall back to remote inbound video RTT instead of triggering a false stale recovery", async (t) => {
+  let statsReads = 0;
+  let controlOfferCalls = 0;
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    playbackQualityImpl: () => ({
+      totalVideoFrames: 120,
+      currentTime: 2,
+    }),
+    rtcGetStatsImpl: () => {
+      statsReads += 1;
+      const trackRoundTripTime = statsReads === 1 ? 0.04 : 0.25;
+      const remoteRoundTripTime = statsReads === 1 ? 0.04 : 0.045;
+      return new Map([
+        [
+          "video-inbound",
+          {
+            type: "inbound-rtp",
+            kind: "video",
+            transportId: "video-transport",
+            framesDecoded: 120,
+            bytesReceived: 1200000,
+            packetsReceived: 1000,
+            packetsLost: 0,
+          },
+        ],
+        [
+          "video-track",
+          {
+            type: "track",
+            kind: "video",
+            framesDecoded: 120,
+            bytesReceived: 1200000,
+            packetsReceived: 1000,
+            packetsLost: 0,
+            roundTripTime: trackRoundTripTime,
+          },
+        ],
+        [
+          "video-transport",
+          {
+            type: "transport",
+          },
+        ],
+        [
+          "candidate-pair-a",
+          {
+            type: "candidate-pair",
+            nominated: true,
+            state: "succeeded",
+            currentRoundTripTime: 0.21,
+          },
+        ],
+        [
+          "candidate-pair-b",
+          {
+            type: "candidate-pair",
+            state: "succeeded",
+            currentRoundTripTime: 0.24,
+          },
+        ],
+        [
+          "remote-video",
+          {
+            type: "remote-inbound-rtp",
+            kind: "video",
+            roundTripTime: remoteRoundTripTime,
+          },
+        ],
+      ]);
+    },
+    fetchImpl: async (url) => {
+      if (/\/api\/room\/(join|reconnect)$/.test(String(url))) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 1,
+              seat_epoch: 1,
+              reconnect_token: "reconnect-fixed",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/control/offer")) {
+        controlOfferCalls += 1;
+        return {
+          ok: true,
+          async json() {
+            return {
+              type: "answer",
+              sdp: "control-answer",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/stream/settings")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1280,
+              height: 720,
+              fps: 60,
+              bitrateKbps: 6000,
+              applied: false,
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {};
+        },
+        async text() {
+          return "v=0\r\n";
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-ambiguous-candidate-pair-rtt`);
+  await harness.settle();
+
+  const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const initialMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+  const initialControlOfferCalls = controlOfferCalls;
+
+  harness.runAnimationFrame(0);
+  await harness.settle();
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+  harness.runAnimationFrame(2800);
+  await harness.settle();
+
+  const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const resumedMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+
+  assert.equal(resumedRoomCalls, initialRoomCalls, "expected ambiguous candidate-pair RTT to avoid room reconnect when remote inbound RTT stays healthy");
+  assert.equal(resumedMediaCalls, initialMediaCalls, "expected ambiguous candidate-pair RTT to avoid false media refreshes");
+  assert.equal(controlOfferCalls, initialControlOfferCalls, "expected ambiguous candidate-pair RTT to avoid control renegotiation");
+});
+
+test("stale recovery keeps the visible rtc hud pinned while a media-only refresh is still in flight", async (t) => {
+  let mediaCalls = 0;
+  let resolveDeferredMedia = null;
+  let statsReads = 0;
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    playbackQualityImpl: () => ({
+      totalVideoFrames: 120,
+      currentTime: 2,
+    }),
+    rtcGetStatsImpl: () => {
+      statsReads += 1;
+      return new Map([
+        [
+          "video-track",
+          {
+            type: "track",
+            kind: "video",
+            framesDecoded: 120,
+            bytesReceived: 1200000,
+            packetsReceived: 1000,
+            packetsLost: 0,
+            roundTripTime: statsReads === 1 ? 0.04 : 0.09,
+          },
+        ],
+      ]);
+    },
+    fetchImpl: async (url) => {
+      if (/\/api\/room\/(join|reconnect)$/.test(String(url))) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              room_id: "living-room",
+              player_id: "uuid-fixed",
+              role: "player",
+              seat_index: 1,
+              seat_epoch: 1,
+              reconnect_token: "reconnect-fixed",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/control/offer")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              type: "answer",
+              sdp: "control-answer",
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/api/stream/settings")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1280,
+              height: 720,
+              fps: 60,
+              bitrateKbps: 6000,
+              applied: false,
+            };
+          },
+        };
+      }
+
+      if (String(url).includes("/media/whep")) {
+        mediaCalls += 1;
+        if (mediaCalls === 1) {
+          return {
+            ok: true,
+            async json() {
+              return {};
+            },
+            async text() {
+              return "v=0\r\n";
+            },
+          };
+        }
+
+        return new Promise((resolve) => {
+          resolveDeferredMedia = () => resolve({
+            ok: true,
+            async json() {
+              return {};
+            },
+            async text() {
+              return "v=0\r\n";
+            },
+          });
+        });
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {};
+        },
+        async text() {
+          return "v=0\r\n";
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stale-recovery-hud-hold`);
+  await harness.settle();
+
+  const controlPeer = harness.rtcPeers.find((peer) => peer.channels.some((channel) => channel.label === "joycon.input.v1"));
+  assert.ok(controlPeer, "expected a negotiated rtc control peer");
+  const inputChannel = controlPeer.channels.find((channel) => channel.label === "joycon.input.v1");
+  assert.ok(inputChannel, "expected an rtc input datachannel");
+
+  harness.runAnimationFrame(0);
+  await harness.settle();
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+  harness.runAnimationFrame(2800);
+  await harness.settle();
+
+  assert.equal(mediaCalls, 2, "expected stale recovery to start a second media refresh before the rtc channel blips");
+  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
+
+  inputChannel.readyState = "closing";
+  inputChannel.dispatch("closing");
+  await harness.settle();
+
+  harness.runAnimationFrame(3200);
+  await harness.settle();
+  harness.runAnimationFrame(3600);
+  await harness.settle();
+
+  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
+
+  resolveDeferredMedia?.();
+  await harness.settle();
+});
+
 test("failed media-only stale recovery escalates to the broader reconnect path", async (t) => {
   let mediaCalls = 0;
   let playbackReads = 0;
@@ -2048,6 +2355,44 @@ test("websocket fallback stays warm without immediately flipping the visible hud
   inputChannel.dispatch("open");
   await harness.settle();
   assert.equal(harness.transportModeEl.textContent, "control: webrtc");
+});
+
+test("transient rtc input blips do not immediately spill gameplay packets onto websocket fallback", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-rtc-send-hysteresis`);
+  await harness.settle();
+
+  const controlPeer = harness.rtcPeers.find((peer) => peer.channels.some((channel) => channel.label === "joycon.input.v1"));
+  assert.ok(controlPeer, "expected a negotiated rtc control peer");
+
+  const inputChannel = controlPeer.channels.find((channel) => channel.label === "joycon.input.v1");
+  assert.ok(inputChannel, "expected an rtc input datachannel");
+
+  const socket = harness.webSockets[0];
+  const countWsInputPackets = () => socket.sentPackets.filter((packet) => packet?.client_session_id).length;
+  const wsSentBefore = countWsInputPackets();
+  const rtcSentBefore = inputChannel.sentPackets.length;
+
+  inputChannel.readyState = "closing";
+  inputChannel.dispatch("closing");
+  harness.buttonElements[0].dispatch("pointerdown", { pointerId: 7 });
+  harness.runAnimationFrame(16);
+  await harness.settle();
+
+  assert.equal(countWsInputPackets(), wsSentBefore, "expected websocket fallback to stay warm without taking over immediately");
+
+  inputChannel.readyState = "open";
+  inputChannel.dispatch("open");
+  harness.buttonElements[0].dispatch("pointerup", { pointerId: 7 });
+  harness.runAnimationFrame(520);
+  await harness.settle();
+
+  assert.ok(inputChannel.sentPackets.length > rtcSentBefore, "expected rtc transport to resume sending once the channel reopens");
 });
 
 test("media failure is surfaced as a visible stream error", async (t) => {

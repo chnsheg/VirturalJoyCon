@@ -513,6 +513,7 @@ export class LatestStateTransmitter {
   constructor({
     getSocket,
     getDataChannel,
+    getPreferredTransport,
     readState,
     minIntervalMs = 8,
     heartbeatMs = 250,
@@ -521,6 +522,7 @@ export class LatestStateTransmitter {
   }) {
     this.getSocket = getSocket;
     this.getDataChannel = getDataChannel;
+    this.getPreferredTransport = getPreferredTransport;
     this.readState = readState;
     this.minIntervalMs = minIntervalMs;
     this.heartbeatMs = heartbeatMs;
@@ -569,23 +571,27 @@ export class LatestStateTransmitter {
     this.priority = false;
   }
 
-  tryFlush(nowMs) {
+  tryFlushDataChannel(nowMs) {
     const dataChannel = this.getDataChannel?.();
-    if (dataChannel && dataChannel.readyState === DATA_CHANNEL_OPEN) {
-      if ((dataChannel.bufferedAmount ?? 0) > this.maxDataChannelBufferedAmount) {
-        return false;
-      }
-
-      const payload = this.createPayload(nowMs);
-      if (!payload) {
-        return false;
-      }
-
-      dataChannel.send(payload.serialized);
-      this.commit(payload, nowMs);
-      return "datachannel";
+    if (!dataChannel || dataChannel.readyState !== DATA_CHANNEL_OPEN) {
+      return false;
     }
 
+    if ((dataChannel.bufferedAmount ?? 0) > this.maxDataChannelBufferedAmount) {
+      return false;
+    }
+
+    const payload = this.createPayload(nowMs);
+    if (!payload) {
+      return false;
+    }
+
+    dataChannel.send(payload.serialized);
+    this.commit(payload, nowMs);
+    return "datachannel";
+  }
+
+  tryFlushSocket(nowMs) {
     const socket = this.getSocket?.();
     if (!socket || socket.readyState !== SOCKET_OPEN) {
       return false;
@@ -603,5 +609,16 @@ export class LatestStateTransmitter {
     socket.send(payload.serialized);
     this.commit(payload, nowMs);
     return "ws";
+  }
+
+  tryFlush(nowMs) {
+    const preferredTransport = this.getPreferredTransport?.();
+    if (preferredTransport === "datachannel") {
+      return this.tryFlushDataChannel(nowMs);
+    }
+    if (preferredTransport === "ws") {
+      return this.tryFlushSocket(nowMs);
+    }
+    return this.tryFlushDataChannel(nowMs) || this.tryFlushSocket(nowMs);
   }
 }

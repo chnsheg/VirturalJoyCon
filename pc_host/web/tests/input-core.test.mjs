@@ -312,6 +312,82 @@ test("LatestStateTransmitter keeps websocket fallback latest-state semantics whe
   assert.equal(sent[0].sticks.right.nx, 0.75);
 });
 
+test("LatestStateTransmitter honors a preferred rtc transport and avoids immediate websocket fallback during brief rtc blips", () => {
+  const wsSent = [];
+  const dataChannel = {
+    readyState: "closing",
+    bufferedAmount: 0,
+    send() {
+      throw new Error("closing datachannel should not send");
+    },
+  };
+  const socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(payload) {
+      wsSent.push(JSON.parse(payload));
+    },
+  };
+
+  const transmitter = new LatestStateTransmitter({
+    getDataChannel: () => dataChannel,
+    getSocket: () => socket,
+    getPreferredTransport: () => "datachannel",
+    readState: () => ({
+      device_id: "phone-a",
+      client_session_id: "client-a",
+      input_stream_id: "stream-a",
+      buttons: { a: true },
+      sticks: { left: { nx: 0, ny: 0 }, right: { nx: 0, ny: 0 } },
+      triggers: { lt: 0, rt: 0 },
+    }),
+  });
+
+  transmitter.markDirty(true);
+
+  assert.equal(transmitter.tryFlush(0), false);
+  assert.equal(wsSent.length, 0);
+});
+
+test("LatestStateTransmitter can stay on websocket during rtc recovery hysteresis even after rtc reopens", () => {
+  const rtcSent = [];
+  const wsSent = [];
+  const dataChannel = {
+    readyState: "open",
+    bufferedAmount: 0,
+    send(payload) {
+      rtcSent.push(JSON.parse(payload));
+    },
+  };
+  const socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(payload) {
+      wsSent.push(JSON.parse(payload));
+    },
+  };
+
+  const transmitter = new LatestStateTransmitter({
+    getDataChannel: () => dataChannel,
+    getSocket: () => socket,
+    getPreferredTransport: () => "ws",
+    readState: () => ({
+      device_id: "phone-a",
+      client_session_id: "client-a",
+      input_stream_id: "stream-a",
+      buttons: { a: false },
+      sticks: { left: { nx: 0.25, ny: 0 }, right: { nx: 0, ny: 0 } },
+      triggers: { lt: 0, rt: 0 },
+    }),
+  });
+
+  transmitter.markDirty(true);
+
+  assert.equal(transmitter.tryFlush(0), "ws");
+  assert.equal(wsSent.length, 1);
+  assert.equal(rtcSent.length, 0);
+});
+
 test("LatencyTracker smooths ping samples and expires stale values", () => {
   const tracker = new LatencyTracker({ maxSamples: 5, staleAfterMs: 2500 });
 

@@ -1,4 +1,4 @@
-import { buildRoomApiUrls } from "./stream-session.mjs";
+import { buildRoomApiUrls } from "./stream-session.mjs?v=stream-20260423-5";
 
 export const INPUT_CHANNEL_LABEL = "joycon.input.v1";
 export const CONTROL_CHANNEL_LABEL = "joycon.control.v1";
