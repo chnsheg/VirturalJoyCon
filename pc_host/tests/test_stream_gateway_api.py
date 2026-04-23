@@ -393,6 +393,73 @@ class StreamGatewayAppLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(factory.close_all_calls, 1)
 
 
+class StreamGatewaySettingsValidationTests(unittest.TestCase):
+    def test_parse_active_stream_settings_accepts_canonical_payload_with_strong_identity(self) -> None:
+        payload = {
+            "width": 1920,
+            "height": 1080,
+            "fps": 60,
+            "bitrateKbps": 9000,
+            "requestFingerprint": "ABC123",
+            "publisherPid": 1234,
+            "publisherStartedAtFileTimeUtc": 5678,
+        }
+
+        self.assertEqual(stream_gateway.parse_active_stream_settings(payload), payload)
+
+    def test_parse_active_stream_settings_rejects_coercible_or_non_canonical_values(self) -> None:
+        base_payload = {
+            "width": 1920,
+            "height": 1080,
+            "fps": 60,
+            "bitrateKbps": 9000,
+            "requestFingerprint": "ABC123",
+            "publisherPid": 1234,
+            "publisherStartedAtFileTimeUtc": 5678,
+        }
+
+        invalid_payloads = (
+            {**base_payload, "width": "1920"},
+            {**base_payload, "height": 1080.0},
+            {**base_payload, "fps": True},
+            {**base_payload, "width": 1921},
+            {**base_payload, "publisherStartedAtFileTimeUtc": "5678"},
+            {**base_payload, "bitrateKbps": 9055},
+        )
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                self.assertIsNone(stream_gateway.parse_active_stream_settings(payload))
+
+    def test_stream_settings_applied_requires_matching_process_identity(self) -> None:
+        active_settings = {
+            "width": 1920,
+            "height": 1080,
+            "fps": 60,
+            "bitrateKbps": 9000,
+            "requestFingerprint": "ABC123",
+            "publisherPid": 1234,
+            "publisherStartedAtFileTimeUtc": 5678,
+        }
+
+        with patch.object(stream_gateway, "get_process_identity", return_value=(1234, 9876)):
+            self.assertFalse(stream_gateway.stream_settings_applied("ABC123", active_settings))
+
+    def test_stream_settings_applied_accepts_matching_process_identity_and_fingerprint(self) -> None:
+        active_settings = {
+            "width": 1920,
+            "height": 1080,
+            "fps": 60,
+            "bitrateKbps": 9000,
+            "requestFingerprint": "ABC123",
+            "publisherPid": 1234,
+            "publisherStartedAtFileTimeUtc": 5678,
+        }
+
+        with patch.object(stream_gateway, "get_process_identity", return_value=(1234, 5678)):
+            self.assertTrue(stream_gateway.stream_settings_applied("ABC123", active_settings))
+
+
 class StreamGatewayApiTests(AioHTTPTestCase):
     async def get_application(self):
         self.now = [100.0]
@@ -985,6 +1052,51 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(payload["sourceCaps"]["fps"], 60)
         self.assertFalse(payload["applied"])
 
+    async def test_stream_settings_get_uses_a_single_requested_snapshot_for_settings_and_fingerprint(
+        self,
+    ) -> None:
+        original_settings = {"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}
+        updated_settings = {"width": 1280, "height": 720, "fps": 60, "bitrateKbps": 6000}
+        self.settings_path.write_text(json.dumps(original_settings), encoding="utf-8")
+        current_fingerprint = hashlib.sha256(self.settings_path.read_bytes()).hexdigest().upper()
+        self.active_settings_path.write_text(
+            json.dumps(
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 60,
+                    "bitrateKbps": 9000,
+                    "requestFingerprint": current_fingerprint,
+                    "publisherPid": 1234,
+                    "publisherStartedAtFileTimeUtc": 5678,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        original_read_text = Path.read_text
+        mutated = False
+
+        def mutate_after_requested_settings_read(path: Path, *args, **kwargs) -> str:
+            nonlocal mutated
+            text = original_read_text(path, *args, **kwargs)
+            if not mutated and path == self.settings_path:
+                mutated = True
+                self.settings_path.write_text(json.dumps(updated_settings), encoding="utf-8")
+            return text
+
+        with (
+            patch.object(Path, "read_text", new=mutate_after_requested_settings_read),
+            patch.object(stream_gateway, "get_process_identity", return_value=(1234, 5678)),
+        ):
+            response = await self.client.get("/api/stream/settings")
+            payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["requested"], original_settings)
+        self.assertEqual(payload["effective"]["fps"], 60)
+        self.assertTrue(payload["applied"])
+
     async def test_stream_settings_get_ignores_metadata_only_active_file_and_falls_back_to_requested_effective(
         self,
     ) -> None:
@@ -1035,12 +1147,13 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "bitrateKbps": 9000,
                     "requestFingerprint": "STALE-FINGERPRINT",
                     "publisherPid": 1234,
+                    "publisherStartedAtFileTimeUtc": 5678,
                 }
             ),
             encoding="utf-8",
         )
 
-        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+        with patch.object(stream_gateway, "get_process_identity", return_value=(1234, 5678)):
             response = await self.client.get("/api/stream/settings")
             payload = await response.json()
 
@@ -1086,12 +1199,13 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "bitrateKbps": 9000,
                     "requestFingerprint": current_fingerprint,
                     "publisherPid": 4321,
+                    "publisherStartedAtFileTimeUtc": 8765,
                 }
             ),
             encoding="utf-8",
         )
 
-        with patch.object(stream_gateway, "is_process_alive", return_value=False):
+        with patch.object(stream_gateway, "get_process_identity", return_value=None):
             response = await self.client.get("/api/stream/settings")
             payload = await response.json()
 
@@ -1116,12 +1230,13 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "bitrateKbps": 9000,
                     "requestFingerprint": current_fingerprint,
                     "publisherPid": 1234,
+                    "publisherStartedAtFileTimeUtc": 5678,
                 }
             ),
             encoding="utf-8",
         )
 
-        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+        with patch.object(stream_gateway, "get_process_identity", return_value=(1234, 5678)):
             response = await self.client.get("/api/stream/settings")
             payload = await response.json()
 
@@ -1132,7 +1247,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(payload["bitrateKbps"], 9000)
         self.assertTrue(payload["applied"])
 
-    async def test_stream_settings_get_reclamps_stale_active_profile_before_reporting_effective_values(self) -> None:
+    async def test_stream_settings_get_rejects_non_canonical_active_profile_before_reporting_effective_values(self) -> None:
         self.settings_path.write_text(
             json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
             encoding="utf-8",
@@ -1141,24 +1256,33 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.active_settings_path.write_text(
             json.dumps(
                 {
-                    "width": 1920,
-                    "height": 1080,
-                    "fps": 120,
-                    "bitrateKbps": 9000,
+                    "width": 1279,
+                    "height": 720,
+                    "fps": 60,
+                    "bitrateKbps": 6000,
                     "requestFingerprint": current_fingerprint,
                     "publisherPid": 1234,
+                    "publisherStartedAtFileTimeUtc": 5678,
                 }
             ),
             encoding="utf-8",
         )
 
-        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+        with patch.object(stream_gateway, "get_process_identity", return_value=(1234, 5678)):
             response = await self.client.get("/api/stream/settings")
             payload = await response.json()
 
         self.assertEqual(response.status, 200)
-        self.assertEqual(payload["effective"]["fps"], 60)
-        self.assertTrue(payload["applied"])
+        self.assertEqual(
+            payload["effective"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        self.assertFalse(payload["applied"])
 
     async def test_stream_settings_get_requires_active_acknowledgement_even_when_the_active_profile_matches(
         self,
@@ -1230,12 +1354,13 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                     "bitrateKbps": 9000,
                     "requestFingerprint": current_fingerprint,
                     "publisherPid": 1234,
+                    "publisherStartedAtFileTimeUtc": 5678,
                 }
             ),
             encoding="utf-8",
         )
 
-        with patch.object(stream_gateway, "is_process_alive", return_value=True):
+        with patch.object(stream_gateway, "get_process_identity", return_value=(1234, 5678)):
             response = await self.client.post(
                 "/api/stream/settings",
                 json={

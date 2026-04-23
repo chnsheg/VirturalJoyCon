@@ -380,17 +380,19 @@ function Write-ActiveStreamSettings {
     param(
         [System.Collections.IDictionary]$Profile,
         [string]$RequestFingerprint,
-        [int]$PublisherPid
+        [int]$PublisherPid,
+        [long]$PublisherStartedAtFileTimeUtc
     )
 
     New-Item -ItemType Directory -Path $script:RuntimeDir -Force | Out-Null
     [ordered]@{
-        width              = [int]$Profile.Width
-        height             = [int]$Profile.Height
-        fps                = [int]$Profile.Fps
-        bitrateKbps        = [int]$Profile.VideoBitrateKbps
+        width = [int]$Profile.Width
+        height = [int]$Profile.Height
+        fps = [int]$Profile.Fps
+        bitrateKbps = [int]$Profile.VideoBitrateKbps
         requestFingerprint = $RequestFingerprint
-        publisherPid        = $PublisherPid
+        publisherPid = $PublisherPid
+        publisherStartedAtFileTimeUtc = $PublisherStartedAtFileTimeUtc
     } | ConvertTo-Json | Set-Content -LiteralPath $script:ActiveStreamSettingsPath -Encoding UTF8
 }
 
@@ -509,7 +511,7 @@ try {
             Write-Host "Video profile: $($profile.Width)x$($profile.Height) @ $($profile.Fps)fps, $($profile.VideoBitrateKbps) kbps" -ForegroundColor Cyan
 
             $publisherProcess = Start-PublisherProcess -ExecutablePath $resolvedFfmpegExe -Arguments $ffmpegArguments
-            Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $savedSettingsSnapshot.Fingerprint -PublisherPid $publisherProcess.Id
+            Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $savedSettingsSnapshot.Fingerprint -PublisherPid $publisherProcess.Id -PublisherStartedAtFileTimeUtc $publisherProcess.StartTime.ToFileTimeUtc()
             $appliedSettingsHash = $savedSettingsSnapshot.Fingerprint
         }
 

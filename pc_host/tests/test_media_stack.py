@@ -489,13 +489,16 @@ class MediaStackTests(unittest.TestCase):
 
         self.assertIn("[string]$RequestFingerprint", publisher_text)
         self.assertIn("[int]$PublisherPid", publisher_text)
+        self.assertIn("[long]$PublisherStartedAtFileTimeUtc", publisher_text)
         self.assertIn("requestFingerprint = $RequestFingerprint", publisher_text)
         self.assertIn("publisherPid", publisher_text)
         self.assertIn("= $PublisherPid", publisher_text)
+        self.assertIn("publisherStartedAtFileTimeUtc = $PublisherStartedAtFileTimeUtc", publisher_text)
         self.assertIn("function Get-SavedStreamSettingsSnapshot {", publisher_text)
         self.assertIn("$savedSettingsSnapshot = Get-SavedStreamSettingsSnapshot", publisher_text)
+        self.assertIn("$publisherProcess.StartTime.ToFileTimeUtc()", publisher_text)
         self.assertIn(
-            "Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $savedSettingsSnapshot.Fingerprint -PublisherPid $publisherProcess.Id",
+            "Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $savedSettingsSnapshot.Fingerprint -PublisherPid $publisherProcess.Id -PublisherStartedAtFileTimeUtc $publisherProcess.StartTime.ToFileTimeUtc()",
             publisher_text,
         )
 

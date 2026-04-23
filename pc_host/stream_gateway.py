@@ -1,10 +1,12 @@
 import argparse
 import asyncio
+import ctypes
 import hashlib
 import json
 import os
 from contextlib import suppress
 from collections.abc import Awaitable, Callable, Mapping
+from ctypes import wintypes
 from pathlib import Path
 
 from aiohttp import ClientSession, web
@@ -32,6 +34,35 @@ DEFAULT_STREAM_SETTINGS = {
     "fps": 60,
     "bitrateKbps": 6000,
 }
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+if os.name == "nt":
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class _FILETIME(ctypes.Structure):
+        _fields_ = [
+            ("dwLowDateTime", wintypes.DWORD),
+            ("dwHighDateTime", wintypes.DWORD),
+        ]
+
+    _open_process = _kernel32.OpenProcess
+    _open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _open_process.restype = wintypes.HANDLE
+
+    _get_process_times = _kernel32.GetProcessTimes
+    _get_process_times.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+    ]
+    _get_process_times.restype = wintypes.BOOL
+
+    _close_handle = _kernel32.CloseHandle
+    _close_handle.argtypes = [wintypes.HANDLE]
+    _close_handle.restype = wintypes.BOOL
 
 
 def add_cors_headers(response: web.StreamResponse) -> web.StreamResponse:
@@ -151,13 +182,13 @@ def load_optional_stream_settings(settings_path: Path) -> dict[str, int] | None:
     return normalize_stream_settings(payload)
 
 
-def _read_required_integer(payload: Mapping[str, object], field_name: str) -> int | None:
-    if field_name not in payload or isinstance(payload[field_name], bool):
+def _read_required_strict_integer(payload: Mapping[str, object], field_name: str) -> int | None:
+    if field_name not in payload:
         return None
-    try:
-        return int(payload[field_name])
-    except (TypeError, ValueError):
+    value = payload[field_name]
+    if isinstance(value, bool) or not isinstance(value, int):
         return None
+    return value
 
 
 def parse_active_stream_settings(payload: Mapping[str, object] | None) -> dict[str, object] | None:
@@ -166,25 +197,70 @@ def parse_active_stream_settings(payload: Mapping[str, object] | None) -> dict[s
 
     raw_settings: dict[str, int] = {}
     for field_name in ("width", "height", "fps", "bitrateKbps"):
-        value = _read_required_integer(payload, field_name)
+        value = _read_required_strict_integer(payload, field_name)
         if value is None:
             return None
         raw_settings[field_name] = value
 
+    if normalize_stream_settings(raw_settings) != raw_settings:
+        return None
+
     request_fingerprint = str(payload.get("requestFingerprint") or "").strip().upper()
-    publisher_pid = _read_required_integer(payload, "publisherPid")
-    if not request_fingerprint or publisher_pid is None or publisher_pid <= 0:
+    publisher_pid = _read_required_strict_integer(payload, "publisherPid")
+    publisher_started_at = _read_required_strict_integer(
+        payload,
+        "publisherStartedAtFileTimeUtc",
+    )
+    if (
+        not request_fingerprint
+        or publisher_pid is None
+        or publisher_pid <= 0
+        or publisher_started_at is None
+        or publisher_started_at <= 0
+    ):
         return None
 
     return {
-        **normalize_stream_settings(raw_settings),
+        **raw_settings,
         "requestFingerprint": request_fingerprint,
         "publisherPid": publisher_pid,
+        "publisherStartedAtFileTimeUtc": publisher_started_at,
     }
 
 
 def load_optional_active_stream_settings(settings_path: Path) -> dict[str, object] | None:
     return parse_active_stream_settings(_load_optional_json_mapping(settings_path))
+
+
+def _filetime_to_int(filetime: object) -> int:
+    return (int(filetime.dwHighDateTime) << 32) | int(filetime.dwLowDateTime)
+
+
+def get_process_identity(pid: int) -> tuple[int, int] | None:
+    if pid <= 0 or os.name != "nt":
+        return None
+
+    process_handle = _open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not process_handle:
+        return None
+
+    creation_time = _FILETIME()
+    exit_time = _FILETIME()
+    kernel_time = _FILETIME()
+    user_time = _FILETIME()
+
+    try:
+        if not _get_process_times(
+            process_handle,
+            ctypes.byref(creation_time),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            return None
+        return pid, _filetime_to_int(creation_time)
+    finally:
+        _close_handle(process_handle)
 
 
 def is_process_alive(pid: int) -> bool:
@@ -196,9 +272,7 @@ def is_process_alive(pid: int) -> bool:
 
 
 def load_stream_settings(settings_path: Path) -> dict[str, int]:
-    settings = load_optional_stream_settings(settings_path)
-    if settings is None:
-        return dict(DEFAULT_STREAM_SETTINGS)
+    settings, _ = load_requested_stream_settings_snapshot(settings_path)
     return settings
 
 
@@ -209,6 +283,28 @@ def save_stream_settings(settings_path: Path, payload: Mapping[str, object]) -> 
     return settings
 
 
+def load_requested_stream_settings_snapshot(settings_path: Path) -> tuple[dict[str, int], str]:
+    try:
+        settings_bytes = settings_path.read_bytes()
+    except FileNotFoundError:
+        return dict(DEFAULT_STREAM_SETTINGS), ""
+    except OSError:
+        return dict(DEFAULT_STREAM_SETTINGS), ""
+
+    try:
+        payload = json.loads(settings_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return dict(DEFAULT_STREAM_SETTINGS), ""
+
+    if not isinstance(payload, Mapping):
+        return dict(DEFAULT_STREAM_SETTINGS), ""
+
+    return (
+        normalize_stream_settings(dict(payload)),
+        hashlib.sha256(settings_bytes).hexdigest().upper(),
+    )
+
+
 def stream_settings_applied(
     settings_fingerprint: str,
     active_settings: Mapping[str, object] | None,
@@ -217,10 +313,12 @@ def stream_settings_applied(
         return False
     active_fingerprint = str(active_settings.get("requestFingerprint") or "").strip().upper()
     publisher_pid = active_settings.get("publisherPid")
+    publisher_started_at = active_settings.get("publisherStartedAtFileTimeUtc")
     return (
         active_fingerprint == settings_fingerprint
         and isinstance(publisher_pid, int)
-        and is_process_alive(publisher_pid)
+        and isinstance(publisher_started_at, int)
+        and get_process_identity(publisher_pid) == (publisher_pid, publisher_started_at)
     )
 
 
@@ -560,8 +658,9 @@ def create_stream_app(
         )
 
     async def handle_stream_settings_get(request: web.Request) -> web.Response:
-        settings = load_stream_settings(request.app[stream_settings_path_key])
-        settings_fingerprint = get_stream_settings_fingerprint(request.app[stream_settings_path_key])
+        settings, settings_fingerprint = load_requested_stream_settings_snapshot(
+            request.app[stream_settings_path_key]
+        )
         active_settings = load_optional_active_stream_settings(
             request.app[active_stream_settings_path_key]
         )
@@ -581,8 +680,10 @@ def create_stream_app(
         if not isinstance(payload, Mapping):
             return cors_json_response({"ok": False, "reason": "invalid_body"}, status=400)
 
-        settings = save_stream_settings(request.app[stream_settings_path_key], payload)
-        settings_fingerprint = get_stream_settings_fingerprint(request.app[stream_settings_path_key])
+        save_stream_settings(request.app[stream_settings_path_key], payload)
+        settings, settings_fingerprint = load_requested_stream_settings_snapshot(
+            request.app[stream_settings_path_key]
+        )
         active_settings = load_optional_active_stream_settings(
             request.app[active_stream_settings_path_key]
         )
