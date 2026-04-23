@@ -20,6 +20,7 @@ import {
 } from "./host-config.mjs?v=stream-20260422-9";
 import { computeLayoutMetrics } from "./layout-core.mjs";
 import { getControlHudText, negotiateControlPeer } from "./stream-control.mjs";
+import { classifyStreamHealth, createInitialStreamHealth } from "./stream-health.mjs";
 import { createStreamCanvasRenderer, subscribeViaWhep } from "./stream-media.mjs?v=stream-20260423-3";
 import { createInitialStreamState, createRoomSessionClient, roomStatusText } from "./stream-session.mjs";
 
@@ -181,9 +182,12 @@ let lastStreamCurrentTime = 0;
 let lastTelemetryVideoSample = null;
 let streamResyncInFlight = false;
 let lastStreamResyncAt = -Infinity;
+let holdWebrtcControlHudDuringStreamResync = false;
+let streamHealthRecoveryHudUntil = -Infinity;
 let appWasHidden = globalThis.document?.visibilityState === "hidden";
 let immersiveRequestInFlight = false;
 const streamState = createInitialStreamState();
+let streamHealth = createInitialStreamHealth();
 const streamRenderer = createStreamCanvasRenderer({
   videoEl: remoteVideoEl,
   canvasEl: streamCanvasEl,
@@ -241,6 +245,9 @@ function readVideoProgress(videoEl) {
   return {
     frameCount: Number.isFinite(frameCount) ? frameCount : 0,
     currentTime: Number.isFinite(currentTime) ? currentTime : 0,
+    freezeCount: Number.isFinite(Number(playbackQuality?.freezeCount))
+      ? Number(playbackQuality.freezeCount)
+      : null,
   };
 }
 
@@ -254,6 +261,7 @@ function resetStreamDiagnostics(nowMs = performance.now()) {
     bitrateKbps: Number.NaN,
     lossPercent: Number.NaN,
   };
+  streamHealth = createInitialStreamHealth();
   const progress = readVideoProgress(remoteVideoEl);
   lastStreamFrameAt = nowMs;
   lastStreamFrameCount = progress.frameCount;
@@ -335,40 +343,99 @@ function formatProtocolLabel(mode) {
   return "RTC";
 }
 
-function describeStreamQuality({ fps, lossPercent }) {
+function readFallbackLatencyMs(nowMs) {
+  const numericValue = latencyTracker.getNumericValue();
+  if (!Number.isFinite(numericValue)) {
+    return null;
+  }
+
+  if ((nowMs - latencyTracker.lastUpdatedAt) > latencyTracker.staleAfterMs) {
+    return null;
+  }
+
+  return numericValue;
+}
+
+function readMediaRoundTripTimeMs(videoStats) {
+  const roundTripTime = Number(
+    videoStats?.roundTripTime
+    ?? videoStats?.currentRoundTripTime,
+  );
+  if (!Number.isFinite(roundTripTime) || roundTripTime < 0) {
+    return null;
+  }
+
+  return roundTripTime <= 10 ? roundTripTime * 1000 : roundTripTime;
+}
+
+function updateStreamHealth(nowMs, { progress = readVideoProgress(remoteVideoEl), videoStats = null } = {}) {
+  if (!activeMediaPeer) {
+    streamHealth = createInitialStreamHealth();
+    return streamHealth;
+  }
+
+  const freezeCountFromStats = Number(videoStats?.freezeCount);
+  const freezeCount =
+    Number.isFinite(freezeCountFromStats)
+      ? freezeCountFromStats
+      : progress.freezeCount;
+  streamHealth = classifyStreamHealth(streamHealth, {
+    nowMs,
+    frameCount: progress.frameCount,
+    currentTime: progress.currentTime,
+    freezeCount,
+    mediaRoundTripTimeMs: readMediaRoundTripTimeMs(videoStats),
+    fallbackLatencyMs: readFallbackLatencyMs(nowMs),
+  });
+
+  if (streamHealth.status === "healthy" || streamHealth.status === "stressed" || streamHealth.status === "frozen") {
+    streamHealthRecoveryHudUntil = -Infinity;
+  }
+
+  if (
+    streamHealth.shouldRecover
+    && !streamResyncInFlight
+    && globalThis.document?.visibilityState !== "hidden"
+  ) {
+    void resyncActiveStreaming("stale", { observedAtMs: nowMs });
+  }
+
+  return streamHealth;
+}
+
+function describeStreamHealthLabel(nowMs = performance.now()) {
+  if (
+    streamResyncInFlight
+    || streamState.lastError === "resyncing stream"
+    || nowMs <= streamHealthRecoveryHudUntil
+  ) {
+    return "recovering";
+  }
+
   if (!activeMediaPeer) {
     return "idle";
   }
 
-  if (streamState.lastError) {
+  if (!streamHealth.initialized) {
     return "recovering";
   }
 
-  if (controlHudMode !== "webrtc") {
-    return "degraded";
+  if (streamHealth.status === "frozen") {
+    return "frozen";
   }
 
-  if (!Number.isFinite(fps)) {
-    return "warming";
+  if (streamHealth.status === "stressed") {
+    return "stressed";
   }
 
-  if (Number.isFinite(lossPercent) && lossPercent >= 8) {
-    return "poor";
+  if (streamHealth.status === "healthy") {
+    return "healthy";
   }
 
-  if (fps < 24) {
-    return "poor";
-  }
-
-  if ((Number.isFinite(lossPercent) && lossPercent >= 3) || fps < 48) {
-    return "fair";
-  }
-
-  return "good";
+  return "recovering";
 }
 
-function estimatePlaybackFps(videoEl) {
-  const progress = readVideoProgress(videoEl);
+function estimatePlaybackFps(videoEl, progress = readVideoProgress(videoEl)) {
   if (progress.frameCount <= 0 || progress.currentTime <= 0.05) {
     return Number.NaN;
   }
@@ -376,8 +443,7 @@ function estimatePlaybackFps(videoEl) {
   return progress.frameCount / progress.currentTime;
 }
 
-function updateLocalVideoTelemetry(nowMs) {
-  const progress = readVideoProgress(remoteVideoEl);
+function updateLocalVideoTelemetry(nowMs, progress = readVideoProgress(remoteVideoEl)) {
   if (!lastTelemetryVideoSample) {
     lastTelemetryVideoSample = {
       nowMs,
@@ -424,16 +490,12 @@ function buildStreamTelemetryItems(nowMs = performance.now()) {
   const telemetryFps = Number.isFinite(currentStreamTelemetryMetrics.fps) && currentStreamTelemetryMetrics.fps > 0
     ? currentStreamTelemetryMetrics.fps
     : fallbackFps;
-  const quality = describeStreamQuality({
-    fps: telemetryFps,
-    lossPercent: currentStreamTelemetryMetrics.lossPercent,
-  });
   return [
     { label: "Protocol", value: formatProtocolLabel(controlHudMode) },
     { label: "FPS", value: formatFps(telemetryFps) },
     { label: "Bitrate", value: formatBitrateKbps(currentStreamTelemetryMetrics.bitrateKbps) },
     { label: "Latency", value: latencyTracker.getDisplayValue(nowMs) },
-    { label: "Quality", value: quality },
+    { label: "Quality", value: describeStreamHealthLabel(nowMs) },
     { label: "Loss", value: formatLossPercent(currentStreamTelemetryMetrics.lossPercent) },
   ];
 }
@@ -505,7 +567,8 @@ async function pollStreamTelemetry(nowMs) {
     return;
   }
 
-  updateLocalVideoTelemetry(nowMs);
+  const progress = readVideoProgress(remoteVideoEl);
+  updateLocalVideoTelemetry(nowMs, progress);
 
   if (streamTelemetryInFlight || (nowMs - lastStreamTelemetryPollAt) < STREAM_TELEMETRY_POLL_MS) {
     return;
@@ -514,6 +577,7 @@ async function pollStreamTelemetry(nowMs) {
   lastStreamTelemetryPollAt = nowMs;
 
   if (!activeMediaPeer || typeof activeMediaPeer.getStats !== "function") {
+    updateStreamHealth(nowMs, { progress });
     renderStreamTelemetry(nowMs);
     return;
   }
@@ -523,6 +587,7 @@ async function pollStreamTelemetry(nowMs) {
     const report = await activeMediaPeer.getStats();
     const videoStats = selectInboundVideoStats(report);
     if (!videoStats) {
+      updateStreamHealth(nowMs, { progress });
       renderStreamTelemetry(nowMs);
       return;
     }
@@ -561,8 +626,10 @@ async function pollStreamTelemetry(nowMs) {
         lossPercent: smoothTelemetryMetric(currentStreamTelemetryMetrics.lossPercent, metrics.lossPercent),
       };
     }
+    updateStreamHealth(nowMs, { progress, videoStats });
     renderStreamTelemetry(nowMs);
   } catch {
+    updateStreamHealth(nowMs, { progress });
     renderStreamTelemetry(nowMs);
   } finally {
     streamTelemetryInFlight = false;
@@ -577,6 +644,16 @@ function updateStreamDegradedState() {
 }
 
 function setControlHudMode(mode) {
+  if (
+    holdWebrtcControlHudDuringStreamResync
+    && controlHudMode === "webrtc"
+    && mode !== "webrtc"
+  ) {
+    updateStreamDegradedState();
+    renderStreamTelemetry(performance.now(), { force: true });
+    return;
+  }
+
   controlHudMode = mode;
   updateStreamDegradedState();
   renderStreamTelemetry(performance.now(), { force: true });
@@ -1056,19 +1133,26 @@ async function requestFullscreenPlayback() {
   await requestImmersiveViewport({ silent: false });
 }
 
-async function resyncActiveStreaming(reason = "resume") {
+async function resyncActiveStreaming(reason = "resume", { observedAtMs = performance.now() } = {}) {
   const hostTarget = getConfiguredHostTarget();
   if (!hostTarget || streamResyncInFlight) {
     return;
   }
 
-  const nowMs = performance.now();
+  const nowMs = observedAtMs;
   if ((nowMs - lastStreamResyncAt) < STREAM_RESYNC_COOLDOWN_MS) {
     return;
   }
 
   streamResyncInFlight = true;
   lastStreamResyncAt = nowMs;
+  const preserveWebrtcControlHud = reason === "stale" && controlHudMode === "webrtc";
+  if (preserveWebrtcControlHud) {
+    holdWebrtcControlHudDuringStreamResync = true;
+  }
+  if (reason === "stale") {
+    streamHealthRecoveryHudUntil = nowMs + Math.max(STREAM_TELEMETRY_POLL_MS, STREAM_RESYNC_COOLDOWN_MS);
+  }
   streamState.lastError = reason === "stale" ? "resyncing stream" : "";
   updateStreamDegradedState();
   closeSocketAndReconnectTimer();
@@ -1079,6 +1163,9 @@ async function resyncActiveStreaming(reason = "resume") {
   } finally {
     streamResyncInFlight = false;
     resetStreamDiagnostics(performance.now());
+    if (preserveWebrtcControlHud) {
+      holdWebrtcControlHudDuringStreamResync = false;
+    }
   }
 }
 
@@ -1138,22 +1225,7 @@ function maybeResyncStaleStream(nowMs) {
     return;
   }
 
-  const progress = readVideoProgress(remoteVideoEl);
-  const frameAdvanced = progress.frameCount > lastStreamFrameCount;
-  const timeAdvanced = progress.currentTime > (lastStreamCurrentTime + 0.001);
-
-  if (frameAdvanced || timeAdvanced) {
-    lastStreamFrameAt = nowMs;
-  }
-
-  lastStreamFrameCount = progress.frameCount;
-  lastStreamCurrentTime = progress.currentTime;
-
-  if ((progress.frameCount === 0 && progress.currentTime === 0) || (nowMs - lastStreamFrameAt) < STREAM_STALE_FRAME_THRESHOLD_MS) {
-    return;
-  }
-
-  void resyncActiveStreaming("stale");
+  updateStreamHealth(nowMs, { progress: readVideoProgress(remoteVideoEl) });
 }
 
 function applyResponsiveLayout() {

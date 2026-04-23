@@ -218,6 +218,7 @@ function installAppHarness({
   enableRtc = false,
   fetchImpl = null,
   rtcGetStatsImpl = null,
+  playbackQualityImpl = null,
   performanceStepMs = null,
 }) {
   const originalGlobals = new Map();
@@ -259,6 +260,13 @@ function installAppHarness({
   remoteVideoEl.currentTime = 0;
   let playbackFrameCount = 0;
   remoteVideoEl.getVideoPlaybackQuality = () => {
+    if (typeof playbackQualityImpl === "function") {
+      const sample = playbackQualityImpl({ currentTime: remoteVideoEl.currentTime }) ?? {};
+      if (Number.isFinite(sample.currentTime)) {
+        remoteVideoEl.currentTime = sample.currentTime;
+      }
+      return sample;
+    }
     playbackFrameCount += 60;
     remoteVideoEl.currentTime += 1;
     return { totalVideoFrames: playbackFrameCount };
@@ -1510,6 +1518,83 @@ test("stream telemetry falls back to decoded video progress when rtc stats omit 
 
   assert.doesNotMatch(harness.streamTelemetryEl.textContent, /fps\s*--/i);
   assert.match(harness.streamTelemetryEl.textContent, /fps/i);
+});
+
+test("frozen media telemetry surfaces recovery without downgrading the control hud immediately", async (t) => {
+  let playbackReads = 0;
+  let statsReads = 0;
+  const harness = installAppHarness({
+    savedHostTarget: "192.168.0.10:8081",
+    enableRtc: true,
+    playbackQualityImpl: () => {
+      playbackReads += 1;
+      if (playbackReads <= 3) {
+        return {
+          totalVideoFrames: 120,
+          currentTime: 2,
+          freezeCount: 0,
+        };
+      }
+      return {
+        totalVideoFrames: 120,
+        currentTime: 2,
+        freezeCount: 1,
+      };
+    },
+    rtcGetStatsImpl: () => {
+      statsReads += 1;
+      if (statsReads === 1) {
+        return new Map([
+          [
+            "video-track",
+            {
+              type: "track",
+              kind: "video",
+              framesDecoded: 120,
+              bytesReceived: 1200000,
+              packetsReceived: 1000,
+              packetsLost: 0,
+              freezeCount: 0,
+            },
+          ],
+        ]);
+      }
+
+      return new Map([
+        [
+          "video-track",
+          {
+            type: "track",
+            kind: "video",
+            framesDecoded: 120,
+            bytesReceived: 1200000,
+            packetsReceived: 1000,
+            packetsLost: 0,
+            freezeCount: 1,
+          },
+        ],
+      ]);
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-frozen`);
+  await harness.settle();
+
+  const initialRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const initialMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+
+  harness.runAnimationFrame(0);
+  harness.runAnimationFrame(1200);
+  await harness.settle();
+
+  const resumedRoomCalls = harness.fetchCalls.filter(([url]) => /\/api\/room\/(join|reconnect)$/.test(String(url))).length;
+  const resumedMediaCalls = harness.fetchCalls.filter(([url]) => String(url).includes("/media/whep")).length;
+
+  assert.match(harness.streamTelemetryEl.textContent, /frozen|recovering/i);
+  assert.equal(harness.transportModeEl.textContent, "control: webrtc");
+  assert.ok(resumedRoomCalls > initialRoomCalls, "expected frozen media to trigger room resync");
+  assert.ok(resumedMediaCalls > initialMediaCalls, "expected frozen media to trigger media resubscribe");
 });
 
 test("stream telemetry hud does not re-render on every animation frame between one-second samples", async (t) => {
