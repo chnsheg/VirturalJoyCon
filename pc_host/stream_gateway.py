@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import hashlib
 import json
 from contextlib import suppress
 from collections.abc import Awaitable, Callable, Mapping
@@ -129,7 +130,7 @@ def normalize_stream_settings(payload: Mapping[str, object] | None = None) -> di
     }
 
 
-def load_optional_stream_settings(settings_path: Path) -> dict[str, int] | None:
+def _load_optional_json_mapping(settings_path: Path) -> dict[str, object] | None:
     try:
         payload = json.loads(settings_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -139,7 +140,18 @@ def load_optional_stream_settings(settings_path: Path) -> dict[str, int] | None:
 
     if not isinstance(payload, Mapping):
         return None
+    return dict(payload)
+
+
+def load_optional_stream_settings(settings_path: Path) -> dict[str, int] | None:
+    payload = _load_optional_json_mapping(settings_path)
+    if payload is None:
+        return None
     return normalize_stream_settings(payload)
+
+
+def load_optional_active_stream_settings(settings_path: Path) -> dict[str, object] | None:
+    return _load_optional_json_mapping(settings_path)
 
 
 def load_stream_settings(settings_path: Path) -> dict[str, int]:
@@ -157,22 +169,22 @@ def save_stream_settings(settings_path: Path, payload: Mapping[str, object]) -> 
 
 
 def stream_settings_applied(
-    settings: Mapping[str, object],
+    settings_fingerprint: str,
     active_settings: Mapping[str, object] | None,
 ) -> bool:
-    if active_settings is None:
+    if active_settings is None or not settings_fingerprint:
         return False
-    requested_effective = clamp_effective_profile(
-        _stream_profile_from_settings(settings),
-        source_caps=DEFAULT_SOURCE_CAPS,
-        runtime_caps=DEFAULT_RUNTIME_CAPS,
-    )
-    active_effective = clamp_effective_profile(
-        _stream_profile_from_settings(active_settings),
-        source_caps=DEFAULT_SOURCE_CAPS,
-        runtime_caps=DEFAULT_RUNTIME_CAPS,
-    )
-    return requested_effective == active_effective
+    active_fingerprint = str(active_settings.get("requestFingerprint") or "").strip().upper()
+    return active_fingerprint == settings_fingerprint
+
+
+def get_stream_settings_fingerprint(settings_path: Path) -> str:
+    try:
+        return hashlib.sha256(settings_path.read_bytes()).hexdigest().upper()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return ""
 
 
 def _stream_profile_from_settings(settings: Mapping[str, object]) -> StreamProfile:
@@ -187,6 +199,7 @@ def _stream_profile_from_settings(settings: Mapping[str, object]) -> StreamProfi
 
 def _stream_settings_payload(
     settings: Mapping[str, object],
+    settings_fingerprint: str,
     active_settings: Mapping[str, object] | None,
 ) -> dict[str, object]:
     requested = _stream_profile_from_settings(settings)
@@ -207,7 +220,7 @@ def _stream_settings_payload(
         requested=requested,
         effective=effective,
         source_caps=DEFAULT_SOURCE_CAPS,
-        applied=stream_settings_applied(settings, active_settings),
+        applied=stream_settings_applied(settings_fingerprint, active_settings),
     )
 
 
@@ -502,11 +515,14 @@ def create_stream_app(
 
     async def handle_stream_settings_get(request: web.Request) -> web.Response:
         settings = load_stream_settings(request.app[stream_settings_path_key])
-        active_settings = load_optional_stream_settings(request.app[active_stream_settings_path_key])
+        settings_fingerprint = get_stream_settings_fingerprint(request.app[stream_settings_path_key])
+        active_settings = load_optional_active_stream_settings(
+            request.app[active_stream_settings_path_key]
+        )
         return cors_json_response(
             {
                 "ok": True,
-                **_stream_settings_payload(settings, active_settings),
+                **_stream_settings_payload(settings, settings_fingerprint, active_settings),
             }
         )
 
@@ -520,11 +536,14 @@ def create_stream_app(
             return cors_json_response({"ok": False, "reason": "invalid_body"}, status=400)
 
         settings = save_stream_settings(request.app[stream_settings_path_key], payload)
-        active_settings = load_optional_stream_settings(request.app[active_stream_settings_path_key])
+        settings_fingerprint = get_stream_settings_fingerprint(request.app[stream_settings_path_key])
+        active_settings = load_optional_active_stream_settings(
+            request.app[active_stream_settings_path_key]
+        )
         return cors_json_response(
             {
                 "ok": True,
-                **_stream_settings_payload(settings, active_settings),
+                **_stream_settings_payload(settings, settings_fingerprint, active_settings),
             }
         )
 

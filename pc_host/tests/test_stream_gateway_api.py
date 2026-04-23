@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -979,18 +980,28 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         )
         self.assertEqual(payload["width"], 1920)
         self.assertEqual(payload["height"], 1080)
-        self.assertEqual(payload["fps"], 90)
+        self.assertEqual(payload["fps"], 60)
         self.assertEqual(payload["bitrateKbps"], 9000)
         self.assertEqual(payload["sourceCaps"]["fps"], 60)
         self.assertFalse(payload["applied"])
 
-    async def test_stream_settings_get_reports_capped_request_as_applied_once_active_converges(self) -> None:
+    async def test_stream_settings_get_keeps_applied_false_until_active_fingerprint_matches_current_request(
+        self,
+    ) -> None:
         self.settings_path.write_text(
             json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
             encoding="utf-8",
         )
         self.active_settings_path.write_text(
-            json.dumps({"width": 1920, "height": 1080, "fps": 60, "bitrateKbps": 9000}),
+            json.dumps(
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 60,
+                    "bitrateKbps": 9000,
+                    "requestFingerprint": "STALE-FINGERPRINT",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -1000,7 +1011,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["width"], 1920)
         self.assertEqual(payload["height"], 1080)
-        self.assertEqual(payload["fps"], 90)
+        self.assertEqual(payload["fps"], 60)
         self.assertEqual(payload["bitrateKbps"], 9000)
         self.assertEqual(
             payload["requested"],
@@ -1020,6 +1031,37 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                 "bitrateKbps": 9000,
             },
         )
+        self.assertFalse(payload["applied"])
+
+    async def test_stream_settings_get_reports_capped_request_as_applied_once_active_acknowledges_current_request(
+        self,
+    ) -> None:
+        self.settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+        current_fingerprint = hashlib.sha256(self.settings_path.read_bytes()).hexdigest().upper()
+        self.active_settings_path.write_text(
+            json.dumps(
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 60,
+                    "bitrateKbps": 9000,
+                    "requestFingerprint": current_fingerprint,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        response = await self.client.get("/api/stream/settings")
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["width"], 1920)
+        self.assertEqual(payload["height"], 1080)
+        self.assertEqual(payload["fps"], 60)
+        self.assertEqual(payload["bitrateKbps"], 9000)
         self.assertTrue(payload["applied"])
 
     async def test_stream_settings_get_reclamps_stale_active_profile_before_reporting_effective_values(self) -> None:
@@ -1027,8 +1069,17 @@ class StreamGatewayApiTests(AioHTTPTestCase):
             json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
             encoding="utf-8",
         )
+        current_fingerprint = hashlib.sha256(self.settings_path.read_bytes()).hexdigest().upper()
         self.active_settings_path.write_text(
-            json.dumps({"width": 1920, "height": 1080, "fps": 120, "bitrateKbps": 9000}),
+            json.dumps(
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 120,
+                    "bitrateKbps": 9000,
+                    "requestFingerprint": current_fingerprint,
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -1039,7 +1090,9 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(payload["effective"]["fps"], 60)
         self.assertTrue(payload["applied"])
 
-    async def test_stream_settings_get_reports_applied_when_the_active_profile_matches(self) -> None:
+    async def test_stream_settings_get_requires_active_acknowledgement_even_when_the_active_profile_matches(
+        self,
+    ) -> None:
         self.settings_path.write_text(
             json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
             encoding="utf-8",
@@ -1053,7 +1106,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         payload = await response.json()
 
         self.assertEqual(response.status, 200)
-        self.assertEqual(payload["applied"], True)
+        self.assertEqual(payload["applied"], False)
 
     async def test_stream_settings_post_persists_the_validated_profile(self) -> None:
         response = await self.client.post(
@@ -1085,9 +1138,29 @@ class StreamGatewayApiTests(AioHTTPTestCase):
             },
         )
 
-    async def test_stream_settings_post_reports_applied_when_the_active_profile_already_matches(self) -> None:
+    async def test_stream_settings_post_reports_applied_when_the_active_fingerprint_already_matches(
+        self,
+    ) -> None:
+        stream_gateway.save_stream_settings(
+            self.settings_path,
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        current_fingerprint = stream_gateway.get_stream_settings_fingerprint(self.settings_path)
         self.active_settings_path.write_text(
-            json.dumps({"width": 1920, "height": 1080, "fps": 60, "bitrateKbps": 9000}),
+            json.dumps(
+                {
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 60,
+                    "bitrateKbps": 9000,
+                    "requestFingerprint": current_fingerprint,
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -1105,7 +1178,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["applied"], True)
 
-    async def test_stream_settings_post_preserves_flat_requested_fields_while_reporting_clamped_effective_profile(
+    async def test_stream_settings_post_reports_flat_effective_fields_while_requested_retains_user_profile(
         self,
     ) -> None:
         response = await self.client.post(
@@ -1122,8 +1195,17 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["width"], 1920)
         self.assertEqual(payload["height"], 1080)
-        self.assertEqual(payload["fps"], 90)
+        self.assertEqual(payload["fps"], 60)
         self.assertEqual(payload["bitrateKbps"], 9000)
+        self.assertEqual(
+            payload["requested"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 90,
+                "bitrateKbps": 9000,
+            },
+        )
         self.assertEqual(
             payload["effective"],
             {
@@ -1154,7 +1236,7 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                 "ok": True,
                 "width": 1980,
                 "height": 1078,
-                "fps": 61,
+                "fps": 60,
                 "bitrateKbps": 6100,
                 "requested": {
                     "width": 1980,

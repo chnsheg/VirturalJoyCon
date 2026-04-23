@@ -1233,6 +1233,60 @@ test("apply stream uses the current host input before connect saves it", async (
   );
 });
 
+test("load stream settings hydrates the form from nested requested values when flat fields are effective", async (t) => {
+  const harness = installAppHarness({
+    savedHostTarget: "10.0.0.3:8082",
+    fetchImpl: async (url, init = {}) => {
+      if (String(url).includes("/api/stream/settings") && init.method === "GET") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              ok: true,
+              width: 1980,
+              height: 1080,
+              fps: 60,
+              bitrateKbps: 6000,
+              requested: {
+                width: 1980,
+                height: 1080,
+                fps: 90,
+                bitrateKbps: 6000,
+              },
+              effective: {
+                width: 1980,
+                height: 1080,
+                fps: 60,
+                bitrateKbps: 6000,
+              },
+              applied: false,
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async json() {
+          return {};
+        },
+        async text() {
+          return "v=0\r\n";
+        },
+      };
+    },
+  });
+  t.after(() => harness.restore());
+
+  await import(`${pathToFileURL(resolve(here, "../app.mjs")).href}?case=${Date.now()}-stream-requested-load`);
+  await harness.settle();
+
+  assert.equal(harness.videoWidthInputEl.value, "1980");
+  assert.equal(harness.videoHeightInputEl.value, "1080");
+  assert.equal(harness.videoFpsInputEl.value, "90");
+  assert.equal(harness.videoBitrateInputEl.value, "6000");
+});
+
 test("apply stream polls until the publisher reports the profile is active", async (t) => {
   let getCount = 0;
   const harness = installAppHarness({
@@ -1246,8 +1300,20 @@ test("apply stream polls until the publisher reports the profile is active", asy
               ok: true,
               width: 1980,
               height: 1080,
-              fps: 90,
+              fps: 60,
               bitrateKbps: 6000,
+              requested: {
+                width: 1980,
+                height: 1080,
+                fps: 90,
+                bitrateKbps: 6000,
+              },
+              effective: {
+                width: 1980,
+                height: 1080,
+                fps: 60,
+                bitrateKbps: 6000,
+              },
               applied: false,
             };
           },
@@ -1263,8 +1329,20 @@ test("apply stream polls until the publisher reports the profile is active", asy
               ok: true,
               width: 1980,
               height: 1080,
-              fps: 90,
+              fps: 60,
               bitrateKbps: 6000,
+              requested: {
+                width: 1980,
+                height: 1080,
+                fps: 90,
+                bitrateKbps: 6000,
+              },
+              effective: {
+                width: 1980,
+                height: 1080,
+                fps: 60,
+                bitrateKbps: 6000,
+              },
               applied: getCount >= 2,
             };
           },
@@ -1290,15 +1368,19 @@ test("apply stream polls until the publisher reports the profile is active", asy
   harness.hostTargetInputEl.value = "10.0.0.3:8082";
   harness.streamSettingsSaveEl.dispatch("click");
   await harness.settle();
+  assert.equal(harness.videoFpsInputEl.value, "90");
   assert.equal(harness.streamSettingsStatusEl.textContent, "applying stream profile");
 
   const firstPoll = [...harness.timers.values()].find((timer) => !timer.cleared);
   firstPoll.callback();
   await harness.settle();
+  assert.equal(harness.videoFpsInputEl.value, "90");
+  assert.equal(harness.streamSettingsStatusEl.textContent, "applying stream profile");
   const secondPoll = [...harness.timers.values()].find((timer) => !timer.cleared && timer !== firstPoll);
   secondPoll.callback();
   await harness.settle();
 
+  assert.equal(harness.videoFpsInputEl.value, "90");
   assert.equal(harness.streamSettingsStatusEl.textContent, "stream applied");
 });
 

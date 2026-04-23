@@ -356,15 +356,17 @@ function New-FfmpegArgumentList {
 
 function Write-ActiveStreamSettings {
     param(
-        [System.Collections.IDictionary]$Profile
+        [System.Collections.IDictionary]$Profile,
+        [string]$RequestFingerprint
     )
 
     New-Item -ItemType Directory -Path $script:RuntimeDir -Force | Out-Null
     [ordered]@{
-        width       = [int]$Profile.Width
-        height      = [int]$Profile.Height
-        fps         = [int]$Profile.Fps
-        bitrateKbps = [int]$Profile.VideoBitrateKbps
+        width              = [int]$Profile.Width
+        height             = [int]$Profile.Height
+        fps                = [int]$Profile.Fps
+        bitrateKbps        = [int]$Profile.VideoBitrateKbps
+        requestFingerprint = $RequestFingerprint
     } | ConvertTo-Json | Set-Content -LiteralPath $script:ActiveStreamSettingsPath -Encoding UTF8
 }
 
@@ -469,6 +471,7 @@ $appliedSettingsHash = $null
 try {
     while ($true) {
         if ($null -eq $publisherProcess) {
+            $requestedSettingsHash = Get-StreamSettingsFingerprint -SettingsPath $script:StreamSettingsPath
             $profile = Get-EffectiveStreamProfile
             $ffmpegArguments = New-FfmpegArgumentList -Profile $profile
 
@@ -482,8 +485,8 @@ try {
             Write-Host "Video profile: $($profile.Width)x$($profile.Height) @ $($profile.Fps)fps, $($profile.VideoBitrateKbps) kbps" -ForegroundColor Cyan
 
             $publisherProcess = Start-PublisherProcess -ExecutablePath $resolvedFfmpegExe -Arguments $ffmpegArguments
-            Write-ActiveStreamSettings -Profile $profile
-            $appliedSettingsHash = Get-StreamSettingsFingerprint -SettingsPath $script:StreamSettingsPath
+            Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $requestedSettingsHash
+            $appliedSettingsHash = $requestedSettingsHash
         }
 
         if ($publisherProcess.HasExited) {

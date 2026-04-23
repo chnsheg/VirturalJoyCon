@@ -483,6 +483,18 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("$targetGopFrames = [Math]::Max(24, [Math]::Min(120, [int]$Fps))", publisher_text)
         self.assertIn("$videoBufferKbps = [Math]::Max(600, [int][Math]::Round($VideoBitrateKbps * 0.15))", publisher_text)
 
+    def test_publisher_script_writes_request_fingerprint_to_the_active_settings_file(self) -> None:
+        publisher_script = PROJECT_ROOT / "scripts" / "start_stream_publisher.ps1"
+        publisher_text = publisher_script.read_text(encoding="utf-8")
+
+        self.assertIn("[string]$RequestFingerprint", publisher_text)
+        self.assertIn("requestFingerprint = $RequestFingerprint", publisher_text)
+        self.assertIn("$requestedSettingsHash = Get-StreamSettingsFingerprint", publisher_text)
+        self.assertIn(
+            "Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $requestedSettingsHash",
+            publisher_text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

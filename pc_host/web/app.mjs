@@ -848,6 +848,10 @@ async function pollAppliedStreamSettings(hostTarget) {
   return null;
 }
 
+function requestedStreamSettingsFromPayload(payload) {
+  return normalizeStreamSettings(payload?.requested ?? payload);
+}
+
 function applyStreamSettingsForm(settings = DEFAULT_STREAM_SETTINGS) {
   const normalized = normalizeStreamSettings(settings);
   if (videoWidthInputEl) {
@@ -894,7 +898,7 @@ async function loadStreamSettings(hostTarget) {
       throw new Error(`http_${response.status}`);
     }
     const payload = await response.json();
-    const settings = normalizeStreamSettings(payload);
+    const settings = requestedStreamSettingsFromPayload(payload);
     applyStreamSettingsForm(settings);
     streamSettingsDirty = false;
     streamSettingsStatusEl.textContent = payload.applied ? "stream applied" : "stream profile ready";
@@ -941,7 +945,7 @@ async function saveStreamSettings(hostTarget, { force = false } = {}) {
       if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.reason || `http_${response.status}`);
       }
-      applyStreamSettingsForm(payload);
+      applyStreamSettingsForm(requestedStreamSettingsFromPayload(payload));
       streamSettingsDirty = false;
       if (payload.applied) {
         streamSettingsStatusEl.textContent = "stream applied";
@@ -951,7 +955,7 @@ async function saveStreamSettings(hostTarget, { force = false } = {}) {
       streamSettingsStatusEl.textContent = "applying stream profile";
       const appliedPayload = await pollAppliedStreamSettings(hostTarget);
       if (appliedPayload) {
-        applyStreamSettingsForm(appliedPayload);
+        applyStreamSettingsForm(requestedStreamSettingsFromPayload(appliedPayload));
         streamSettingsDirty = false;
         streamSettingsStatusEl.textContent = "stream applied";
         return;

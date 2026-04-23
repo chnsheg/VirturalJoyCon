@@ -59,7 +59,7 @@ def build_stream_settings_payload(
     applied: bool,
 ) -> dict[str, object]:
     return {
-        **requested.to_payload(),
+        **effective.to_payload(),
         "requested": requested.to_payload(),
         "effective": effective.to_payload(),
         "sourceCaps": source_caps.to_payload(),
