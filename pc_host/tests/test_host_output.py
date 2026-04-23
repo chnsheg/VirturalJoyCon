@@ -56,6 +56,19 @@ class RuntimeNotesTests(unittest.TestCase):
         )
         self.assertNotIn("[GamepadHost] Standalone controller target: 0.0.0.0:8081", notes)
 
+    def test_runtime_notes_include_public_streaming_operational_hints(self) -> None:
+        notes = build_runtime_notes(
+            bind_host="0.0.0.0",
+            http_port=8082,
+            udp_port=28777,
+            access_urls=["http://192.168.0.119:8082"],
+        )
+        note_text = "\n".join(notes)
+
+        self.assertIn("Public control path prefers WebRTC DataChannel", note_text)
+        self.assertIn("Requested FPS may be clamped to the source refresh rate", note_text)
+        self.assertIn("effective stream profile", note_text)
+
     def test_fix_network_access_skip_udp_removes_stale_udp_rule(self) -> None:
         script_path = Path(__file__).resolve().parents[1] / "scripts" / "fix_network_access.ps1"
         command = f"""

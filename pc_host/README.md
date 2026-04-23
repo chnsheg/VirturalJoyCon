@@ -74,6 +74,14 @@ pwsh .\scripts\start_lan_streaming_web_controller.ps1 -DryRun -SkipDependencyIns
 
 正常使用只需要打开静态页面并填写 `192.168.0.119:8082`。不要填写 `127.0.0.1`，手机无法访问电脑自己的本机地址。
 
+## FRPC / 公网稳定性说明
+
+- 对外走 FRPC 时，只要公网侧仍然能建立 WebRTC/UDP，媒体链路依然优先保持 WebRTC/UDP；`/media/whep` 和 `MediaMTX` 的 WHEP 入口仍然是同一套媒体面。
+- `public control path prefers WebRTC DataChannel`，`WebSocket` 会保持温备用于退化时快速接管，`HTTP` 是最后兜底。
+- 页面保存的是 requested profile，发布器真正跑起来后会单独回报 `effective stream profile`；`requested fps may be clamped to the source refresh rate`，也可能被运行时上限进一步收敛。
+- `/api/stream/settings` 会同时返回 requested / effective 字段，`.runtime\\stream_settings.active.json` 也能用来核对发布器当前实际采用的 profile。
+- 健康遥测和 fallback hysteresis 会尽量减少可见卡顿与模式来回抖动，但 FRPC 的 UDP 可达性、NAT 状态和公网回程质量仍然直接影响体验。
+
 ## 端口说明
 
 需要对局域网开放：

@@ -446,6 +446,9 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("8189/UDP", readme_text)
         self.assertNotIn("49152-65535/UDP", readme_text)
         self.assertIn("WebRTC DataChannel", readme_text)
+        self.assertIn("effective stream profile", readme_text)
+        self.assertIn("public control path prefers WebRTC DataChannel", readme_text)
+        self.assertIn("requested fps may be clamped to the source refresh rate", readme_text)
         self.assertNotIn("Python 程序级 UDP", readme_text)
         self.assertIn("8554/TCP", readme_text)
         self.assertIn("9997/TCP", readme_text)
@@ -501,6 +504,22 @@ class MediaStackTests(unittest.TestCase):
             "Write-ActiveStreamSettings -Profile $profile -RequestFingerprint $savedSettingsSnapshot.Fingerprint -PublisherPid $publisherProcess.Id -PublisherStartedAtFileTimeUtc $publisherProcess.StartTime.ToFileTimeUtc()",
             publisher_text,
         )
+
+    def test_frpc_low_jitter_streaming_design_doc_describes_public_behavior_without_overclaiming(self) -> None:
+        design_doc = PROJECT_ROOT.parent / "docs" / "superpowers" / "specs" / "2026-04-23-frpc-low-jitter-streaming-design.md"
+        self.assertTrue(design_doc.exists(), f"Missing design doc: {design_doc}")
+
+        design_text = design_doc.read_text(encoding="utf-8")
+
+        self.assertIn("FRPC", design_text)
+        self.assertIn("WebRTC/UDP", design_text)
+        self.assertIn("WebRTC DataChannel", design_text)
+        self.assertIn("warm fallback", design_text)
+        self.assertIn("HTTP is last resort", design_text)
+        self.assertIn("requested FPS may be clamped", design_text)
+        self.assertIn("effective stream profile", design_text)
+        self.assertNotIn("Moonlight-equivalent", design_text)
+        self.assertNotIn("Moonlight equivalent", design_text)
 
 
 if __name__ == "__main__":
