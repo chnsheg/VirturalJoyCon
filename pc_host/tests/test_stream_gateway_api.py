@@ -11,6 +11,7 @@ import stream_gateway
 from stream_gateway import create_stream_app
 from streaming.control_peer import ControlPeerFactory
 from streaming.room_state import RoomRegistry
+from streaming.sdp_rewrite import filter_or_rewrite_media_answer
 from web_host import WebGamepadHub
 
 
@@ -86,27 +87,7 @@ class RoomRegistrySnapshotTests(unittest.TestCase):
 
 
 class WhepSdpFilterTests(unittest.TestCase):
-    def test_filter_whep_answer_keeps_only_candidates_matching_the_requested_host(self) -> None:
-        answer = "\r\n".join(
-            [
-                "v=0",
-                "o=- 0 0 IN IP4 127.0.0.1",
-                "s=-",
-                "t=0 0",
-                "a=candidate:1 1 UDP 2122252543 10.0.0.7 8189 typ host",
-                "a=candidate:2 1 UDP 2122252543 192.168.0.112 8189 typ host",
-                "a=end-of-candidates",
-                "",
-            ]
-        )
-
-        filtered = stream_gateway.filter_whep_answer_for_host(answer, preferred_host="192.168.0.112")
-
-        self.assertIn("192.168.0.112 8189 typ host", filtered)
-        self.assertNotIn("10.0.0.7 8189 typ host", filtered)
-        self.assertIn("a=end-of-candidates", filtered)
-
-    def test_filter_whep_answer_rewrites_host_candidates_when_requested_host_is_missing(self) -> None:
+    def test_media_helper_rewrites_host_candidates_when_requested_host_is_missing(self) -> None:
         answer = "\r\n".join(
             [
                 "v=0",
@@ -117,7 +98,7 @@ class WhepSdpFilterTests(unittest.TestCase):
             ]
         )
 
-        filtered = stream_gateway.filter_whep_answer_for_host(answer, preferred_host="192.168.0.112")
+        filtered = filter_or_rewrite_media_answer(answer, preferred_host="192.168.0.112")
 
         self.assertIn("192.168.0.112 8189 typ host", filtered)
         self.assertNotIn("10.0.0.7 8189 typ host", filtered)
@@ -855,14 +836,24 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         payload = await response.json()
 
         self.assertEqual(response.status, 200)
-        self.assertEqual(payload, {"sdp": "fake-answer", "type": "answer"})
+        self.assertEqual(
+            payload,
+            {
+                "sdp": "fake-answer",
+                "type": "answer",
+                "diagnostics": {
+                    "request_host": "127.0.0.1",
+                    "host_candidate_count": 0,
+                },
+            },
+        )
         self.assertEqual(
             self.control_peer_factory.calls,
             [{"offer_sdp": "fake-offer", "offer_type": "offer"}],
         )
         self.assertEqual(response.headers["Access-Control-Allow-Origin"], "*")
 
-    async def test_control_offer_returns_control_answer_without_host_rewrite(self) -> None:
+    async def test_control_offer_rewrites_host_candidates_and_exposes_diagnostics(self) -> None:
         self.control_peer_factory.answer_sdp = (
             "\r\n".join(
                 [
@@ -898,10 +889,18 @@ class StreamGatewayApiTests(AioHTTPTestCase):
         payload = await response.json()
 
         self.assertEqual(response.status, 200)
+        self.assertEqual(payload["type"], "answer")
         self.assertIn("c=IN IP4 10.0.0.2", payload["sdp"])
-        self.assertIn("a=candidate:1 1 udp 2130706431 10.0.0.2 53389 typ host", payload["sdp"])
-        self.assertIn("a=candidate:2 1 udp 2130706431 172.25.16.1 53390 typ host", payload["sdp"])
+        self.assertIn("a=candidate:1 1 udp 2130706431 192.168.0.119 53389 typ host", payload["sdp"])
+        self.assertIn("a=candidate:2 1 udp 2130706431 192.168.0.119 53390 typ host", payload["sdp"])
         self.assertIn("a=candidate:3 1 udp 2130706431 192.168.0.119 53394 typ host", payload["sdp"])
+        self.assertEqual(
+            payload["diagnostics"],
+            {
+                "request_host": "192.168.0.119",
+                "host_candidate_count": 3,
+            },
+        )
 
     async def test_control_offer_rejects_spectators(self) -> None:
         for idx in range(4):

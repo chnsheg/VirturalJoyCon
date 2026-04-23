@@ -21,6 +21,12 @@ from streaming.runtime_profile import (
     clamp_effective_profile,
 )
 from streaming.room_state import RoomRegistry
+from streaming.sdp_rewrite import (
+    _extract_host_only,
+    describe_host_candidates,
+    filter_or_rewrite_media_answer,
+    rewrite_control_answer_host_candidates,
+)
 from web_host import WebGamepadHub, handle_input_options
 
 
@@ -423,80 +429,8 @@ def _read_required_text(mapping: Mapping[str, object], field_name: str) -> str:
     return value
 
 
-def _extract_host_only(host_value: str) -> str:
-    host_text = str(host_value or "").strip()
-    if not host_text:
-        return ""
-
-    if host_text.startswith("[") and "]" in host_text:
-        return host_text[1:host_text.index("]")]
-
-    return host_text.split(":", 1)[0]
-
-
-def _candidate_host_from_sdp_line(line: str) -> str | None:
-    candidate_prefix = "a=candidate:"
-    if not line.startswith(candidate_prefix):
-        return None
-
-    parts = line[len(candidate_prefix):].split()
-    if len(parts) < 6:
-        return None
-
-    return parts[4]
-
-
-def _rewrite_candidate_host(line: str, preferred_host: str) -> str:
-    candidate_prefix = "a=candidate:"
-    if not line.startswith(candidate_prefix):
-        return line
-
-    parts = line[len(candidate_prefix):].split()
-    if len(parts) < 8:
-        return line
-
-    if parts[6] != "typ" or parts[7] != "host":
-        return line
-
-    parts[4] = preferred_host
-    return candidate_prefix + " ".join(parts)
-
-
 def filter_whep_answer_for_host(answer_sdp: str, preferred_host: str) -> str:
-    host_text = _extract_host_only(preferred_host)
-    if not host_text:
-        return answer_sdp
-
-    filtered_lines: list[str] = []
-    removed_any = False
-    kept_matching_candidate = False
-
-    for raw_line in answer_sdp.splitlines():
-        line = raw_line.rstrip("\r")
-        candidate_host = _candidate_host_from_sdp_line(line)
-        if candidate_host is None:
-            filtered_lines.append(line)
-            continue
-
-        if candidate_host == host_text:
-            filtered_lines.append(line)
-            kept_matching_candidate = True
-        else:
-            removed_any = True
-
-    if not removed_any:
-        return answer_sdp
-
-    if not kept_matching_candidate:
-        rewritten_lines = [
-            _rewrite_candidate_host(line, preferred_host=host_text)
-            for line in answer_sdp.splitlines()
-        ]
-        trailing_newline = "\r\n" if answer_sdp.endswith(("\r\n", "\n")) else ""
-        return "\r\n".join(line.rstrip("\r") for line in rewritten_lines) + trailing_newline
-
-    trailing_newline = "\r\n" if answer_sdp.endswith(("\r\n", "\n")) else ""
-    return "\r\n".join(filtered_lines) + trailing_newline
+    return filter_or_rewrite_media_answer(answer_sdp, preferred_host=preferred_host)
 
 
 async def proxy_whep_offer_to_backend(
@@ -684,12 +618,29 @@ def create_stream_app(
             status = 409 if reason in {"bad_reconnect_token", "spectator_cannot_control"} else 400
             return cors_json_response({"ok": False, "reason": reason}, status=status)
 
-        return cors_json_response(answer)
+        answer_sdp = str(answer.get("sdp") or "")
+        request_host = _extract_host_only(request.host)
+        rewritten_answer_sdp = rewrite_control_answer_host_candidates(
+            answer_sdp,
+            preferred_host=request.host,
+        )
+        diagnostics = {
+            "request_host": request_host,
+            **describe_host_candidates(answer_sdp),
+        }
+
+        return cors_json_response(
+            {
+                **answer,
+                "sdp": rewritten_answer_sdp,
+                "diagnostics": diagnostics,
+            }
+        )
 
     async def handle_media_whep(request: web.Request) -> web.Response:
         offer_sdp = await request.text()
         status, answer_sdp, _ = await request.app[whep_offer_handler_key](offer_sdp)
-        filtered_answer = filter_whep_answer_for_host(answer_sdp, preferred_host=request.host)
+        filtered_answer = filter_or_rewrite_media_answer(answer_sdp, preferred_host=request.host)
         return add_cors_headers(
             web.Response(
                 status=status,
