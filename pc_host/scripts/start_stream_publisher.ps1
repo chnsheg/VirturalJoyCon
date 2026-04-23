@@ -208,7 +208,7 @@ function Get-EffectiveStreamProfile {
 
     $effectiveWidth = Normalize-EvenDimension -Value $effectiveWidth -Minimum 640 -Maximum 3840
     $effectiveHeight = Normalize-EvenDimension -Value $effectiveHeight -Minimum 360 -Maximum 2160
-    $effectiveFps = [Math]::Max(24, [Math]::Min(120, [int]$effectiveFps))
+    $effectiveFps = [Math]::Max(24, [Math]::Min(60, [int]$effectiveFps))
     $effectiveBitrateKbps = Normalize-BitrateKbps -Value $effectiveBitrateKbps -Minimum 1500 -Maximum 50000
 
     return [ordered]@{
@@ -275,12 +275,14 @@ function New-VideoInputArgs {
 function New-EncoderArgs {
     param(
         [string]$VideoEncoder,
-        [int]$VideoBitrateKbps
+        [int]$VideoBitrateKbps,
+        [int]$Fps
     )
 
     $videoBitrate = "${VideoBitrateKbps}k"
-    $videoBufferKbps = [Math]::Max(800, [int][Math]::Round($VideoBitrateKbps * 0.2))
+    $videoBufferKbps = [Math]::Max(600, [int][Math]::Round($VideoBitrateKbps * 0.15))
     $videoBuffer = "${videoBufferKbps}k"
+    $targetGopFrames = [Math]::Max(24, [Math]::Min(120, [int]$Fps))
 
     if ($VideoEncoder -eq "h264_nvenc") {
         return @(
@@ -307,7 +309,7 @@ function New-EncoderArgs {
             "-bf",
             "0",
             "-g",
-            "30"
+            "$targetGopFrames"
         )
     }
 
@@ -324,7 +326,7 @@ function New-EncoderArgs {
             "-bf",
             "0",
             "-g",
-            "30"
+            "$targetGopFrames"
         )
     }
 
@@ -341,7 +343,7 @@ function New-FfmpegArgumentList {
         -Height $Profile.Height `
         -Fps $Profile.Fps `
         -VideoDevice $VideoDevice
-    $encoderArgs = New-EncoderArgs -VideoEncoder $VideoEncoder -VideoBitrateKbps $Profile.VideoBitrateKbps
+    $encoderArgs = New-EncoderArgs -VideoEncoder $VideoEncoder -VideoBitrateKbps $Profile.VideoBitrateKbps -Fps $Profile.Fps
 
     return @(
         $videoInput.VideoArgs +

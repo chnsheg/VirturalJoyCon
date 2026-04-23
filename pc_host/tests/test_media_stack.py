@@ -200,13 +200,30 @@ class MediaStackTests(unittest.TestCase):
         self.assertIn("8500k", command)
         self.assertIn("-maxrate", command)
         self.assertIn("-bufsize", command)
-        self.assertIn("1700k", command)
+        self.assertIn("1275k", command)
         self.assertIn("-zerolatency", command)
         self.assertIn("1", command)
         self.assertIn("-rc-lookahead", command)
         self.assertEqual(command[command.index("-rc-lookahead") + 1], "0")
         self.assertIn("-delay", command)
         self.assertEqual(command[command.index("-delay") + 1], "0")
+
+    def test_build_ffmpeg_publish_command_uses_effective_fps_for_one_second_gop_and_tighter_buffer(self) -> None:
+        _, build_ffmpeg_publish_command = _media_stack_exports()
+
+        command = build_ffmpeg_publish_command(
+            ffmpeg_exe="ffmpeg.exe",
+            publish_url="rtsp://127.0.0.1:8554/game",
+            width=960,
+            height=540,
+            fps=48,
+            video_device="gfxcapture",
+            audio_device="",
+            video_bitrate_kbps=8500,
+        )
+
+        self.assertEqual(command[command.index("-g") + 1], "48")
+        self.assertEqual(command[command.index("-bufsize") + 1], "1275k")
 
     def test_build_ffmpeg_publish_command_skips_audio_input_when_audio_device_is_blank(self) -> None:
         _, build_ffmpeg_publish_command = _media_stack_exports()
@@ -453,6 +470,18 @@ class MediaStackTests(unittest.TestCase):
         self.assertNotIn('ContainsKey("Height")', publisher_text)
         self.assertNotIn('ContainsKey("Fps")', publisher_text)
         self.assertNotIn('ContainsKey("VideoBitrateKbps")', publisher_text)
+
+    def test_publisher_script_encoder_args_track_effective_fps_and_tighter_buffer(self) -> None:
+        publisher_script = PROJECT_ROOT / "scripts" / "start_stream_publisher.ps1"
+        publisher_text = publisher_script.read_text(encoding="utf-8")
+
+        self.assertIn("[int]$Fps", publisher_text)
+        self.assertIn(
+            "New-EncoderArgs -VideoEncoder $VideoEncoder -VideoBitrateKbps $Profile.VideoBitrateKbps -Fps $Profile.Fps",
+            publisher_text,
+        )
+        self.assertIn("$targetGopFrames = [Math]::Max(24, [Math]::Min(120, [int]$Fps))", publisher_text)
+        self.assertIn("$videoBufferKbps = [Math]::Max(600, [int][Math]::Round($VideoBitrateKbps * 0.15))", publisher_text)
 
 
 if __name__ == "__main__":

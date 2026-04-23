@@ -9,6 +9,13 @@ from aiohttp import ClientSession, web
 
 from gamepad_session_manager import GamepadMapper, VirtualDevicePool, cleanup_loop
 from streaming.control_peer import ControlPeerFactory
+from streaming.runtime_profile import (
+    DEFAULT_RUNTIME_CAPS,
+    DEFAULT_SOURCE_CAPS,
+    StreamProfile,
+    build_stream_settings_payload,
+    clamp_effective_profile,
+)
 from streaming.room_state import RoomRegistry
 from web_host import WebGamepadHub, handle_input_options
 
@@ -156,6 +163,38 @@ def stream_settings_applied(
     if active_settings is None:
         return False
     return normalize_stream_settings(settings) == normalize_stream_settings(active_settings)
+
+
+def _stream_profile_from_settings(settings: Mapping[str, object]) -> StreamProfile:
+    normalized = normalize_stream_settings(settings)
+    return StreamProfile(
+        width=normalized["width"],
+        height=normalized["height"],
+        fps=normalized["fps"],
+        bitrate_kbps=normalized["bitrateKbps"],
+    )
+
+
+def _stream_settings_payload(
+    settings: Mapping[str, object],
+    active_settings: Mapping[str, object] | None,
+) -> dict[str, object]:
+    requested = _stream_profile_from_settings(settings)
+    effective = (
+        _stream_profile_from_settings(active_settings)
+        if active_settings is not None
+        else clamp_effective_profile(
+            requested,
+            source_caps=DEFAULT_SOURCE_CAPS,
+            runtime_caps=DEFAULT_RUNTIME_CAPS,
+        )
+    )
+    return build_stream_settings_payload(
+        requested=requested,
+        effective=effective,
+        source_caps=DEFAULT_SOURCE_CAPS,
+        applied=stream_settings_applied(settings, active_settings),
+    )
 
 
 def _read_required_text(mapping: Mapping[str, object], field_name: str) -> str:
@@ -453,8 +492,7 @@ def create_stream_app(
         return cors_json_response(
             {
                 "ok": True,
-                **settings,
-                "applied": stream_settings_applied(settings, active_settings),
+                **_stream_settings_payload(settings, active_settings),
             }
         )
 
@@ -472,8 +510,7 @@ def create_stream_app(
         return cors_json_response(
             {
                 "ok": True,
-                **settings,
-                "applied": stream_settings_applied(settings, active_settings),
+                **_stream_settings_payload(settings, active_settings),
             }
         )
 

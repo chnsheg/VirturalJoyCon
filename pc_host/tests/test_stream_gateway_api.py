@@ -928,9 +928,61 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                 "height": 720,
                 "fps": 60,
                 "bitrateKbps": 6000,
+                "requested": {
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 60,
+                    "bitrateKbps": 6000,
+                },
+                "effective": {
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 60,
+                    "bitrateKbps": 6000,
+                },
+                "sourceCaps": {
+                    "width": 3840,
+                    "height": 2160,
+                    "fps": 60,
+                },
                 "applied": False,
             },
         )
+
+    async def test_stream_settings_get_reports_requested_and_effective_values(self) -> None:
+        self.settings_path.write_text(
+            json.dumps({"width": 1920, "height": 1080, "fps": 90, "bitrateKbps": 9000}),
+            encoding="utf-8",
+        )
+
+        response = await self.client.get("/api/stream/settings")
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            payload["requested"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 90,
+                "bitrateKbps": 9000,
+            },
+        )
+        self.assertEqual(
+            payload["effective"],
+            {
+                "width": 1920,
+                "height": 1080,
+                "fps": 60,
+                "bitrateKbps": 9000,
+            },
+        )
+        self.assertEqual(payload["width"], 1920)
+        self.assertEqual(payload["height"], 1080)
+        self.assertEqual(payload["fps"], 60)
+        self.assertEqual(payload["bitrateKbps"], 9000)
+        self.assertEqual(payload["sourceCaps"]["fps"], 60)
+        self.assertFalse(payload["applied"])
 
     async def test_stream_settings_get_reports_applied_when_the_active_profile_matches(self) -> None:
         self.settings_path.write_text(
@@ -1017,8 +1069,25 @@ class StreamGatewayApiTests(AioHTTPTestCase):
                 "ok": True,
                 "width": 1980,
                 "height": 1078,
-                "fps": 61,
+                "fps": 60,
                 "bitrateKbps": 6100,
+                "requested": {
+                    "width": 1980,
+                    "height": 1078,
+                    "fps": 61,
+                    "bitrateKbps": 6100,
+                },
+                "effective": {
+                    "width": 1980,
+                    "height": 1078,
+                    "fps": 60,
+                    "bitrateKbps": 6100,
+                },
+                "sourceCaps": {
+                    "width": 3840,
+                    "height": 2160,
+                    "fps": 60,
+                },
                 "applied": False,
             },
         )

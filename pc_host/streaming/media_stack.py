@@ -7,6 +7,14 @@ def _normalize_dshow_audio_source(audio_device: str) -> str:
     return f"audio={audio_device}"
 
 
+def _normalized_gop_size(fps: int) -> int:
+    return max(24, min(120, int(fps)))
+
+
+def _normalized_encoder_buffer_kbps(video_bitrate_kbps: int) -> int:
+    return max(600, int(round(video_bitrate_kbps * 0.15)))
+
+
 def build_mediamtx_env(api_port: int = 9997, webrtc_udp_port: int = 8189) -> dict[str, str]:
     # Keep the planned legacy helper key and the current MediaMTX local UDP key in sync.
     return {
@@ -32,7 +40,8 @@ def build_ffmpeg_publish_command(
     video_bitrate_kbps: int = 6000,
 ) -> list[str]:
     normalized_bitrate_kbps = max(1500, min(50000, int(video_bitrate_kbps)))
-    normalized_bufsize_kbps = max(800, int(round(normalized_bitrate_kbps * 0.2)))
+    normalized_bufsize_kbps = _normalized_encoder_buffer_kbps(normalized_bitrate_kbps)
+    normalized_gop_size = _normalized_gop_size(fps)
     low_delay_nvenc_args = [
         "-c:v",
         "h264_nvenc",
@@ -57,7 +66,7 @@ def build_ffmpeg_publish_command(
         "-bf",
         "0",
         "-g",
-        "30",
+        str(normalized_gop_size),
     ]
     video_filter_args: list[str] = []
     if video_device in {"desktop", "ddagrab"}:
@@ -99,7 +108,7 @@ def build_ffmpeg_publish_command(
             "-bf",
             "0",
             "-g",
-            "30",
+            str(normalized_gop_size),
         ]
     else:
         raise ValueError(f"unsupported_video_encoder:{video_encoder}")
