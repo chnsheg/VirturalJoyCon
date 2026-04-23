@@ -22,8 +22,8 @@ from streaming.runtime_profile import (
 )
 from streaming.room_state import RoomRegistry
 from streaming.sdp_rewrite import (
-    _extract_host_only,
     describe_host_candidates,
+    extract_host_only,
     filter_or_rewrite_media_answer,
     rewrite_control_answer_host_candidates,
 )
@@ -619,7 +619,7 @@ def create_stream_app(
             return cors_json_response({"ok": False, "reason": reason}, status=status)
 
         answer_sdp = str(answer.get("sdp") or "")
-        request_host = _extract_host_only(request.host)
+        request_host = extract_host_only(request.host)
         rewritten_answer_sdp = rewrite_control_answer_host_candidates(
             answer_sdp,
             preferred_host=request.host,

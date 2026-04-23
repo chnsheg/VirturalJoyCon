@@ -2,12 +2,25 @@ import unittest
 
 from streaming.sdp_rewrite import (
     describe_host_candidates,
+    extract_host_only,
     filter_or_rewrite_media_answer,
     rewrite_control_answer_host_candidates,
 )
 
 
 class SdpRewriteTests(unittest.TestCase):
+    def test_extract_host_only_strips_port_from_hostname(self) -> None:
+        self.assertEqual(
+            extract_host_only("controller.example.test:8082"),
+            "controller.example.test",
+        )
+
+    def test_extract_host_only_unwraps_bracketed_ipv6_host_with_port(self) -> None:
+        self.assertEqual(extract_host_only("[2001:db8::44]:8082"), "2001:db8::44")
+
+    def test_extract_host_only_keeps_bare_ipv6_literal_intact(self) -> None:
+        self.assertEqual(extract_host_only("2001:db8::44"), "2001:db8::44")
+
     def test_media_helper_keeps_only_candidates_matching_the_requested_host(self) -> None:
         answer = "\r\n".join(
             [

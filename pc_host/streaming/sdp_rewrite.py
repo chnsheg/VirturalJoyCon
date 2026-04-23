@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 
 
-def _extract_host_only(host_value: str) -> str:
+def extract_host_only(host_value: str) -> str:
     host_text = str(host_value or "").strip()
     if not host_text:
         return ""
@@ -9,7 +9,15 @@ def _extract_host_only(host_value: str) -> str:
     if host_text.startswith("[") and "]" in host_text:
         return host_text[1:host_text.index("]")]
 
-    return host_text.split(":", 1)[0]
+    if host_text.count(":") == 1:
+        host_name, port_text = host_text.rsplit(":", 1)
+        if port_text.isdigit():
+            return host_name
+
+    return host_text
+
+
+_extract_host_only = extract_host_only
 
 
 def _parse_candidate_parts(line: str) -> list[str] | None:
@@ -45,7 +53,7 @@ def _rewrite_candidate_host(line: str, preferred_host: str) -> str:
 
 
 def filter_or_rewrite_media_answer(answer_sdp: str, preferred_host: str) -> str:
-    host_text = _extract_host_only(preferred_host)
+    host_text = extract_host_only(preferred_host)
     if not host_text:
         return answer_sdp
 
@@ -82,7 +90,7 @@ def filter_or_rewrite_media_answer(answer_sdp: str, preferred_host: str) -> str:
 
 
 def rewrite_control_answer_host_candidates(answer_sdp: str, preferred_host: str) -> str:
-    host_text = _extract_host_only(preferred_host)
+    host_text = extract_host_only(preferred_host)
     if not host_text:
         return answer_sdp
 

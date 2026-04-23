@@ -902,6 +902,52 @@ class StreamGatewayApiTests(AioHTTPTestCase):
             },
         )
 
+    async def test_control_offer_preserves_ipv6_host_header_for_diagnostics_and_rewrites(self) -> None:
+        self.control_peer_factory.answer_sdp = (
+            "\r\n".join(
+                [
+                    "v=0",
+                    "m=application 53389 UDP/DTLS/SCTP webrtc-datachannel",
+                    "c=IN IP4 10.0.0.2",
+                    "a=candidate:1 1 udp 2130706431 10.0.0.2 53389 typ host",
+                    "a=candidate:2 1 udp 2130706431 172.25.16.1 53390 typ host",
+                    "a=end-of-candidates",
+                ]
+            )
+            + "\r\n"
+        )
+
+        join = await self.client.post(
+            "/api/room/join",
+            json={"room_id": "living-room", "player_id": "alice"},
+        )
+        joined = await join.json()
+
+        response = await self.client.post(
+            "/api/control/offer",
+            headers={"Host": "[2001:db8::44]:8082"},
+            json={
+                "room_id": "living-room",
+                "player_id": joined["player_id"],
+                "reconnect_token": joined["reconnect_token"],
+                "sdp": "fake-offer",
+                "type": "offer",
+            },
+        )
+        payload = await response.json()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["type"], "answer")
+        self.assertIn("a=candidate:1 1 udp 2130706431 2001:db8::44 53389 typ host", payload["sdp"])
+        self.assertIn("a=candidate:2 1 udp 2130706431 2001:db8::44 53390 typ host", payload["sdp"])
+        self.assertEqual(
+            payload["diagnostics"],
+            {
+                "request_host": "2001:db8::44",
+                "host_candidate_count": 2,
+            },
+        )
+
     async def test_control_offer_rejects_spectators(self) -> None:
         for idx in range(4):
             await self.client.post(
